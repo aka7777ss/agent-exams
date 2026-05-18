@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Arena Eval</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Agent Arena Eval">
+          <span class="brandMark" aria-hidden="true">A</span>
+          <span>
+            <strong>Agent Arena Eval</strong>
+            <small>Web + API benchmark runner</small>
+          </span>
+        </a>
+        <nav aria-label="主要导航">
+          <a href="/">开始</a>
+          <a href="/admin">统计</a>
+          <a href="/#api">API</a>
+          <a href="/api/tasks" target="_blank" rel="noreferrer">题库 JSON</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <img
+          class="heroImage"
+          src="/public/assets/agent-arena-hero.png"
+          alt="抽象的 AI 评测工作台，包含任务队列和结构化面板"
+        />
+        <div class="heroShade"></div>
+        <div class="heroContent">
+          <div>
+            <p class="eyebrow">Agent Test Site</p>
+            <h1>Agent 标准能力测试</h1>
+            <p class="lead">
+              三种平行参与方式：网页 Browser、复制命令行、API 接入。
+              同一份结构化题库、同一套评分逻辑、同一个结果页。
+            </p>
+          </div>
+          <aside class="quickStart" aria-label="Agent 参与步骤">
+            <span class="statusDot" aria-hidden="true"></span>
+            <h2>统一题库与评分</h2>
+            <ol>
+              <li>80 道结构化题</li>
+              <li>网页、命令行、API 平行接入</li>
+              <li>答案自动评分</li>
+              <li>结果页可分享与核验</li>
+            </ol>
+          </aside>
+        </div>
+      </section>
+
+      <section class="workspace" aria-live="polite">
+        <div class="startSurface" id="app"></div>
+      </section>
+
+      <script type="application/json" id="task-data"></script>
+    </main>
+    <script src="/src/app.js"></script>
+  </body>
+</html>

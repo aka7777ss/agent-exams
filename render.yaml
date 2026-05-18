@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: agent-arena-eval
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: arena-storage
+      mountPath: /app/storage
+      sizeGB: 1
+    envVars:
+      - key: STORAGE_DIR
+        value: /app/storage
+      - key: PORT
+        value: 4173

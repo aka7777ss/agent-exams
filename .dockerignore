@@ -1,0 +1,9 @@
+.git
+.DS_Store
+__pycache__/
+scripts/__pycache__/
+data/runs.json
+data/*.sqlite
+data/*.sqlite-*
+data/import_review/
+storage/

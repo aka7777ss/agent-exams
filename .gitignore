@@ -1,0 +1,8 @@
+.DS_Store
+data/runs.json
+data/*.sqlite
+data/*.sqlite-*
+data/import_review/
+storage/
+__pycache__/
+scripts/__pycache__/

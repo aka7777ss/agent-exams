@@ -1,0 +1,12 @@
+{
+  "name": "agent-arena-eval",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node --check server.mjs && node --check src/app.js",
+    "import:tasks": "python3 scripts/import_tasks.py",
+    "preview": "node server.mjs"
+  }
+}
