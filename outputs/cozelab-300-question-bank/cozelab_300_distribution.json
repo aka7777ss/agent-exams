@@ -1,0 +1,33 @@
+{
+  "total": 300,
+  "byModule": {
+    "通用能力": 90,
+    "互联网数据分析": 35,
+    "互联网产品运营": 35,
+    "电商选品": 35,
+    "电商客服": 35,
+    "金融投资分析": 35,
+    "金融投资审查": 35
+  },
+  "byDifficulty": {
+    "easy": 112,
+    "medium": 117,
+    "hard": 71
+  },
+  "byType": {
+    "number": 71,
+    "single_choice": 145,
+    "json": 84
+  },
+  "byModality": {
+    "text_only": 300
+  },
+  "byAppScope": {
+    "none": 240,
+    "multi_app_simulated": 60
+  },
+  "byTaskForm": {
+    "structured_answer": 288,
+    "sandbox_workflow_seed": 12
+  }
+}
