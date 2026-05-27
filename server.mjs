@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { randomInt, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const port = Number(process.env.PORT || 4173);
@@ -40,7 +40,8 @@ function ensureDataStore() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       data_scope TEXT NOT NULL DEFAULT 'real',
-      is_demo INTEGER NOT NULL DEFAULT 0
+      is_demo INTEGER NOT NULL DEFAULT 0,
+      seed TEXT
     );
     CREATE TABLE IF NOT EXISTS answers (
       run_id TEXT NOT NULL,
@@ -64,6 +65,7 @@ function ensureDataStore() {
     );
     CREATE INDEX IF NOT EXISTS idx_run_tasks_run_id ON run_tasks(run_id);
   `);
+  ensureColumn("runs", "seed", "TEXT");
   migrateRunsJsonToDb();
 }
 
@@ -90,10 +92,31 @@ function loadTasks() {
   return tasks;
 }
 
-function shuffle(items) {
+function hashSeed(value) {
+  let hash = 2166136261;
+  const text = String(value);
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function createPrng(seed) {
+  let state = hashSeed(seed) || 0x9e3779b9;
+  return () => {
+    state = Math.imul(state + 0x6d2b79f5, 1);
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(items, random = Math.random) {
   const next = [...items];
   for (let index = next.length - 1; index > 0; index -= 1) {
-    const swapIndex = randomInt(index + 1);
+    const swapIndex = Math.floor(random() * (index + 1));
     [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
   }
   return next;
@@ -138,244 +161,121 @@ function quotaMap(tasks, targetCount, keyFn) {
   return new Map(allocateQuota(groupBy(tasks, keyFn), targetCount, tasks.length).map((group) => [String(group.key), group.count]));
 }
 
-function countSelected(selected, keyFn) {
-  const counts = new Map();
-  for (const task of selected) {
-    const key = String(keyFn(task) ?? "unknown");
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  return counts;
+function difficultyBucket(task) {
+  const score = Number(task.difficulty_score);
+  if (score <= 4) return "b1";
+  if (score <= 6) return "b2";
+  if (score <= 10) return "b3";
+  if (score === 12) return "b4";
+  if (score === 15) return "b5";
+  return "other";
 }
 
-function quotaDeviation(selected, targets, keyFn) {
-  const counts = countSelected(selected, keyFn);
-  let deviation = 0;
-  for (const [key, target] of targets) {
-    deviation += Math.abs((counts.get(key) || 0) - target);
-  }
-  for (const [key, count] of counts) {
-    if (!targets.has(key)) {
-      deviation += count;
-    }
-  }
-  return deviation;
+function taskDomain(task) {
+  const module = String(task.module || "");
+  if (module === "通用能力") return "通用";
+  if (module.includes("客服")) return "客服";
+  if (module.includes("选品")) return "选品";
+  if (module.includes("数据")) return "数据";
+  if (module.includes("产品")) return "产运";
+  if (module.includes("投资分析")) return "金分";
+  if (module.includes("投资审查")) return "金审";
+  return module || "unknown";
 }
 
-function buildModuleScoreCellQuotas(tasks, targetCount) {
-  const modules = quotaMap(tasks, targetCount, (task) => task.module || "unknown");
-  const scores = quotaMap(tasks, targetCount, (task) => task.difficulty_score ?? "unknown");
-  const cellGroups = groupBy(tasks, (task) => `${task.module || "unknown"}::${task.difficulty_score ?? "unknown"}`);
-  const cellMap = new Map(
-    cellGroups.map((cell) => {
-      const [module, score] = cell.key.split("::");
-      return [cell.key, { ...cell, module, score, count: 0 }];
-    }),
-  );
+const v6BucketQuota = new Map([
+  ["b1", 12],
+  ["b2", 12],
+  ["b3", 12],
+  ["b4", 12],
+  ["b5", 12],
+]);
 
-  const source = "source";
-  const sink = "sink";
-  const graph = new Map();
+const v6DomainQuota = new Map([
+  ["通用", 18],
+  ["客服", 7],
+  ["选品", 7],
+  ["数据", 7],
+  ["产运", 7],
+  ["金分", 7],
+  ["金审", 7],
+]);
 
-  function ensureNode(node) {
-    if (!graph.has(node)) graph.set(node, []);
-  }
-
-  function addEdge(from, to, capacity) {
-    ensureNode(from);
-    ensureNode(to);
-    const forward = { from, to, capacity, flow: 0, reverse: null };
-    const reverse = { from: to, to: from, capacity: 0, flow: 0, reverse: forward };
-    forward.reverse = reverse;
-    graph.get(from).push(forward);
-    graph.get(to).push(reverse);
-    return forward;
-  }
-
-  for (const [module, count] of modules) {
-    addEdge(source, `module:${module}`, count);
-  }
-
-  const moduleScoreEdges = [];
-  for (const cell of cellMap.values()) {
-    moduleScoreEdges.push({
-      cell,
-      edge: addEdge(`module:${cell.module}`, `score:${cell.score}`, cell.tasks.length),
-    });
-  }
-
-  for (const [score, count] of scores) {
-    addEdge(`score:${score}`, sink, count);
-  }
-
-  let totalFlow = 0;
-  while (true) {
-    const parents = new Map();
-    const queue = [source];
-    parents.set(source, null);
-
-    for (let index = 0; index < queue.length; index += 1) {
-      const node = queue[index];
-      for (const edge of graph.get(node) || []) {
-        if (parents.has(edge.to) || edge.capacity - edge.flow <= 0) continue;
-        parents.set(edge.to, edge);
-        if (edge.to === sink) break;
-        queue.push(edge.to);
-      }
-      if (parents.has(sink)) break;
-    }
-
-    if (!parents.has(sink)) break;
-
-    let increment = Infinity;
-    for (let edge = parents.get(sink); edge; edge = parents.get(edge.from)) {
-      increment = Math.min(increment, edge.capacity - edge.flow);
-    }
-    for (let edge = parents.get(sink); edge; edge = parents.get(edge.from)) {
-      edge.flow += increment;
-      edge.reverse.flow -= increment;
-    }
-    totalFlow += increment;
-  }
-
-  if (totalFlow !== targetCount) {
-    return {
-      cells: allocateQuota(cellGroups, targetCount, tasks.length).map((cell) => {
-        const [module, score] = cell.key.split("::");
-        return { ...cell, module, score };
-      }),
-      modules,
-      scores,
-    };
-  }
-
-  for (const { cell, edge } of moduleScoreEdges) {
-    cell.count = edge.flow;
-  }
-
-  return { cells: [...cellMap.values()], modules, scores };
-}
-
-function pickBalancedFromCell(candidates, count, selected, secondaryTargets) {
-  const remaining = shuffle(candidates);
-  const picked = [];
-
-  while (picked.length < count && remaining.length) {
-    const ranked = remaining
-      .map((task, index) => {
-        const trial = [...selected, ...picked, task];
-        const score =
-          -quotaDeviation(trial, secondaryTargets.type, (item) => item.type) * 4 -
-          quotaDeviation(trial, secondaryTargets.taskForm, (item) => item.task_form || "unknown") * 4 -
-          quotaDeviation(trial, secondaryTargets.difficulty, (item) => item.difficulty || "unknown") * 3 -
-          quotaDeviation(trial, secondaryTargets.cognitiveDepth, (item) => item.cognitive_depth || "unknown") -
-          quotaDeviation(trial, secondaryTargets.formatComplexity, (item) => item.format_complexity || "unknown") -
-          quotaDeviation(trial, secondaryTargets.infoDensity, (item) => item.info_density || "unknown") +
-          Math.random() * 0.01;
-        return { task, index, score };
-      })
-      .sort((left, right) => right.score - left.score);
-
-    const [choice] = ranked;
-    picked.push(choice.task);
-    remaining.splice(choice.index, 1);
-  }
-
-  return picked;
-}
-
-function secondaryPenalty(selected, secondaryTargets) {
-  return (
-    quotaDeviation(selected, secondaryTargets.type, (item) => item.type) * 4 +
-    quotaDeviation(selected, secondaryTargets.taskForm, (item) => item.task_form || "unknown") * 5 +
-    quotaDeviation(selected, secondaryTargets.difficulty, (item) => item.difficulty || "unknown") * 3 +
-    quotaDeviation(selected, secondaryTargets.cognitiveDepth, (item) => item.cognitive_depth || "unknown") +
-    quotaDeviation(selected, secondaryTargets.formatComplexity, (item) => item.format_complexity || "unknown") +
-    quotaDeviation(selected, secondaryTargets.infoDensity, (item) => item.info_density || "unknown")
-  );
-}
-
-function optimizeSecondaryBalance(selected, cells, secondaryTargets) {
-  const candidatesByCell = new Map(cells.map((cell) => [cell.key, shuffle(cell.tasks)]));
-  let current = [...selected];
-  let currentPenalty = secondaryPenalty(current, secondaryTargets);
-
-  for (let pass = 0; pass < 4; pass += 1) {
-    let improved = false;
-    const selectedIds = new Set(current.map((task) => task.id));
-
-    for (let index = 0; index < current.length; index += 1) {
-      const task = current[index];
-      const key = `${task.module || "unknown"}::${task.difficulty_score ?? "unknown"}`;
-      const replacements = candidatesByCell.get(key) || [];
-
-      for (const replacement of replacements) {
-        if (selectedIds.has(replacement.id)) continue;
-        const trial = [...current];
-        trial[index] = replacement;
-        const trialPenalty = secondaryPenalty(trial, secondaryTargets);
-        if (trialPenalty < currentPenalty) {
-          selectedIds.delete(task.id);
-          selectedIds.add(replacement.id);
-          current = trial;
-          currentPenalty = trialPenalty;
-          improved = true;
-          break;
-        }
-      }
-    }
-
-    if (!improved) break;
-  }
-
-  return current;
-}
-
-function sampleV6ExamTasks(tasks, count) {
-  const { cells } = buildModuleScoreCellQuotas(tasks, count);
-  const secondaryTargets = {
-    type: quotaMap(tasks, count, (task) => task.type),
-    taskForm: quotaMap(tasks, count, (task) => task.task_form || "unknown"),
-    difficulty: quotaMap(tasks, count, (task) => task.difficulty || "unknown"),
-    cognitiveDepth: quotaMap(tasks, count, (task) => task.cognitive_depth || "unknown"),
-    formatComplexity: quotaMap(tasks, count, (task) => task.format_complexity || "unknown"),
-    infoDensity: quotaMap(tasks, count, (task) => task.info_density || "unknown"),
-  };
+function sampleV6ExamTasks(tasks, seed) {
+  const random = createPrng(seed);
   const selected = [];
+  const selectedIds = new Set();
+  const domainCounts = new Map([...v6DomainQuota.keys()].map((domain) => [domain, 0]));
+  const categoryCounts = new Map();
+  const pools = groupBy(tasks, difficultyBucket)
+    .filter((bucket) => v6BucketQuota.has(bucket.key))
+    .sort((left, right) => left.tasks.length - right.tasks.length || left.key.localeCompare(right.key));
 
-  for (const cell of shuffle(cells.filter((cell) => cell.count > 0)).sort((left, right) => left.tasks.length - right.tasks.length)) {
-    selected.push(...pickBalancedFromCell(cell.tasks, cell.count, selected, secondaryTargets));
+  function canPick(task, { enforceDomain, enforceCategory }) {
+    if (selectedIds.has(task.id)) return false;
+    if (enforceDomain && (domainCounts.get(taskDomain(task)) || 0) >= (v6DomainQuota.get(taskDomain(task)) || 0)) return false;
+    if (enforceCategory && (categoryCounts.get(task.category) || 0) >= 2) return false;
+    return true;
   }
 
-  if (selected.length < count) {
-    const selectedIds = new Set(selected.map((task) => task.id));
-    selected.push(...shuffle(tasks.filter((task) => !selectedIds.has(task.id))).slice(0, count - selected.length));
+  function pick(task) {
+    selected.push(task);
+    selectedIds.add(task.id);
+    domainCounts.set(taskDomain(task), (domainCounts.get(taskDomain(task)) || 0) + 1);
+    categoryCounts.set(task.category, (categoryCounts.get(task.category) || 0) + 1);
   }
 
-  return shuffle(optimizeSecondaryBalance(selected.slice(0, count), cells, secondaryTargets));
+  for (const bucket of pools) {
+    const target = v6BucketQuota.get(bucket.key);
+    let pickedInBucket = 0;
+    const candidates = shuffle(bucket.tasks, random);
+    const rounds = [
+      { enforceDomain: true, enforceCategory: true },
+      { enforceDomain: false, enforceCategory: true },
+      { enforceDomain: false, enforceCategory: false },
+    ];
+
+    for (const round of rounds) {
+      if (pickedInBucket >= target) break;
+      for (const task of candidates) {
+        if (pickedInBucket >= target) break;
+        if (!canPick(task, round)) continue;
+        pick(task);
+        pickedInBucket += 1;
+      }
+    }
+  }
+
+  if (selected.length !== 60) {
+    throw new Error(`V6 sampler expected 60 tasks but selected ${selected.length}.`);
+  }
+
+  return selected;
 }
 
-function sampleLegacyExamTasks(tasks, count) {
+function sampleLegacyExamTasks(tasks, count, seed) {
+  const random = createPrng(seed);
   const groups = groupBy(tasks, (task) => `${task.type || "unknown"}::${task.difficulty || "unknown"}`);
   const allocations = allocateQuota(groups, count, tasks.length);
   const selected = [];
 
   for (const group of allocations) {
-    selected.push(...shuffle(group.tasks).slice(0, group.count));
+    selected.push(...shuffle(group.tasks, random).slice(0, group.count));
   }
 
   if (selected.length < count) {
     const selectedIds = new Set(selected.map((task) => task.id));
-    const remaining = shuffle(tasks.filter((task) => !selectedIds.has(task.id)));
+    const remaining = shuffle(tasks.filter((task) => !selectedIds.has(task.id)), random);
     selected.push(...remaining.slice(0, count - selected.length));
   }
 
-  return shuffle(selected).slice(0, count);
+  return shuffle(selected, random).slice(0, count);
 }
 
-function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount) {
+function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount, seed = randomUUID()) {
   const count = Math.max(1, Math.min(Number(requestedCount) || defaultExamTaskCount, tasks.length));
   const hasV6Difficulty = tasks.every((task) => task.module && task.difficulty_score && task.cognitive_depth && task.format_complexity);
-  return hasV6Difficulty ? sampleV6ExamTasks(tasks, count) : sampleLegacyExamTasks(tasks, count);
+  return hasV6Difficulty && count === 60 ? sampleV6ExamTasks(tasks, seed) : sampleLegacyExamTasks(tasks, count, seed);
 }
 
 function tasksForRun(run, allTasks) {
@@ -408,6 +308,14 @@ function dbQuery(sql) {
   return output ? JSON.parse(output) : [];
 }
 
+function ensureColumn(table, column, definition) {
+  const columns = dbQuery(`PRAGMA table_info(${table});`);
+  if (columns.some((item) => item.name === column)) {
+    return;
+  }
+  dbExec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
 function rowToRun(row) {
   return {
     id: row.id,
@@ -416,6 +324,7 @@ function rowToRun(row) {
     updated_at: row.updated_at,
     data_scope: row.data_scope,
     is_demo: Boolean(row.is_demo),
+    seed: row.seed || "",
     answers: {},
     task_ids: [],
   };
@@ -441,7 +350,7 @@ function rowToAnswer(row) {
 
 function readAllRuns() {
   const runs = {};
-  const runRows = dbQuery("SELECT id, agent_name, created_at, updated_at, data_scope, is_demo FROM runs;");
+  const runRows = dbQuery("SELECT id, agent_name, created_at, updated_at, data_scope, is_demo, seed FROM runs;");
   const answerRows = dbQuery("SELECT run_id, task_id, answer_json, correct, score, submitted_at FROM answers;");
   const taskRows = dbQuery("SELECT run_id, task_id, position FROM run_tasks ORDER BY run_id, position;");
 
@@ -466,7 +375,7 @@ function readAllRuns() {
 
 function readRun(runId) {
   const rows = dbQuery(`
-    SELECT id, agent_name, created_at, updated_at, data_scope, is_demo
+    SELECT id, agent_name, created_at, updated_at, data_scope, is_demo, seed
     FROM runs
     WHERE id = ${sqlString(runId)}
     LIMIT 1;
@@ -498,14 +407,15 @@ function readRun(runId) {
 function createRun(run) {
   const statements = [`
     BEGIN IMMEDIATE;
-    INSERT INTO runs (id, agent_name, created_at, updated_at, data_scope, is_demo)
+    INSERT INTO runs (id, agent_name, created_at, updated_at, data_scope, is_demo, seed)
     VALUES (
       ${sqlString(run.id)},
       ${sqlString(run.agent_name)},
       ${sqlString(run.created_at)},
       ${sqlString(run.updated_at)},
       ${sqlString(run.data_scope)},
-      ${run.is_demo ? 1 : 0}
+      ${run.is_demo ? 1 : 0},
+      ${sqlString(run.seed || "")}
     );
   `];
 
@@ -563,14 +473,15 @@ function migrateRunsJsonToDb() {
   for (const run of legacyRuns) {
     const demo = isDemoRun(run);
     statements.push(`
-      INSERT OR IGNORE INTO runs (id, agent_name, created_at, updated_at, data_scope, is_demo)
+      INSERT OR IGNORE INTO runs (id, agent_name, created_at, updated_at, data_scope, is_demo, seed)
       VALUES (
         ${sqlString(run.id)},
         ${sqlString(run.agent_name || "anonymous-agent")},
         ${sqlString(run.created_at)},
         ${sqlString(run.updated_at || run.created_at)},
         ${sqlString(demo ? "demo" : "real")},
-        ${demo ? 1 : 0}
+        ${demo ? 1 : 0},
+        ${sqlString(run.seed || "")}
       );
     `);
     for (const answer of Object.values(run.answers || {})) {
@@ -801,6 +712,7 @@ function buildRunState(run, tasks) {
     updated_at: run.updated_at,
     total_tasks: examTasks.length,
     bank_tasks: tasks.length,
+    seed: run.seed || null,
     submitted,
     remaining: examTasks.length - submitted,
     score,
@@ -1260,7 +1172,9 @@ async function handleApi(request, response, url, tasks) {
     const id = `run_${randomUUID()}`;
     const agentName = String(body.agent_name || body.agentName || "anonymous-agent").slice(0, 80);
     const dataScope = String(body.data_scope || body.dataScope || "").toLowerCase();
-    const examTasks = sampleExamTasks(tasks, defaultExamTaskCount);
+    const requestedSeed = body.seed === undefined || body.seed === null ? "" : String(body.seed).slice(0, 120);
+    const seed = requestedSeed || randomUUID();
+    const examTasks = sampleExamTasks(tasks, defaultExamTaskCount, seed);
     const run = {
       id,
       agent_name: agentName,
@@ -1268,6 +1182,7 @@ async function handleApi(request, response, url, tasks) {
       updated_at: now,
       data_scope: dataScope === "demo" ? "demo" : "real",
       is_demo: dataScope === "demo" || isDemoRun({ agent_name: agentName }),
+      seed,
       task_ids: examTasks.map((task) => task.id),
       answers: {},
     };
