@@ -13,6 +13,8 @@ const runsFile = join(storageDir, "runs.json");
 const legacyRunsFile = join(dataDir, "runs.json");
 const dbFile = join(storageDir, "arena.sqlite");
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
+const stalledLowProgressMs = 10 * 60 * 1000;
+const lowProgressSubmissionLimit = 3;
 
 const types = {
   ".css": "text/css; charset=utf-8",
@@ -517,10 +519,27 @@ function buildRunSummary(run, tasks) {
   };
 }
 
-function filterRunsByScope(runs, scope) {
+function isEmptyRealRun(run) {
+  return !run.is_demo && run.submitted === 0;
+}
+
+function isStalledLowProgressRun(run, nowMs = Date.now()) {
+  if (run.is_demo || run.complete || run.submitted <= 0 || run.submitted >= lowProgressSubmissionLimit) {
+    return false;
+  }
+
+  const updated = Date.parse(run.updated_at || run.created_at);
+  return Number.isFinite(updated) && nowMs - updated > stalledLowProgressMs;
+}
+
+function isVisibleRealRun(run, nowMs = Date.now()) {
+  return !run.is_demo && run.submitted > 0 && !isStalledLowProgressRun(run, nowMs);
+}
+
+function filterRunsByScope(runs, scope, nowMs = Date.now()) {
   if (scope === "all") return runs;
   if (scope === "demo") return runs.filter((run) => run.is_demo);
-  return runs.filter((run) => !run.is_demo && run.submitted > 0);
+  return runs.filter((run) => isVisibleRealRun(run, nowMs));
 }
 
 function emptyBucket() {
@@ -542,9 +561,11 @@ function summarizeBucket(bucket) {
 function buildStats(store, tasks, scope = "real") {
   const rawRuns = Object.values(store.runs || {});
   const allRuns = rawRuns.map((run) => buildRunSummary(run, tasks));
-  const runs = filterRunsByScope(allRuns, scope);
+  const nowMs = Date.now();
+  const runs = filterRunsByScope(allRuns, scope, nowMs);
   const demoRuns = allRuns.filter((run) => run.is_demo);
-  const emptyRealRuns = allRuns.filter((run) => !run.is_demo && run.submitted === 0);
+  const emptyRealRuns = allRuns.filter(isEmptyRealRun);
+  const stalledLowProgressRuns = allRuns.filter((run) => isStalledLowProgressRun(run, nowMs));
   const includedRunIds = new Set(runs.map((run) => run.id));
   const completedRuns = runs.filter((run) => run.complete).length;
   const attempts = runs.reduce((total, run) => total + run.submitted, 0);
@@ -586,11 +607,13 @@ function buildStats(store, tasks, scope = "real") {
     overview: {
       scope,
       total_runs: runs.length,
-      real_runs: allRuns.filter((run) => !run.is_demo && run.submitted > 0).length,
+      real_runs: allRuns.filter((run) => isVisibleRealRun(run, nowMs)).length,
       demo_runs: demoRuns.length,
       empty_real_runs: emptyRealRuns.length,
+      stalled_low_progress_runs: stalledLowProgressRuns.length,
       hidden_demo_runs: scope === "real" ? demoRuns.length : 0,
       hidden_empty_runs: scope === "real" ? emptyRealRuns.length : 0,
+      hidden_stalled_runs: scope === "real" ? stalledLowProgressRuns.length : 0,
       completed_runs: completedRuns,
       total_tasks: tasks.length,
       attempts,
@@ -645,20 +668,24 @@ async function handleApi(request, response, url, tasks) {
 
   if (request.method === "GET" && url.pathname === "/api/runs") {
     const scope = url.searchParams.get("scope") || "real";
+    const nowMs = Date.now();
     const runs = Object.values(readAllRuns().runs || {})
       .map((run) => buildRunSummary(run, tasks))
       .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
-    const filteredRuns = filterRunsByScope(runs, scope);
+    const filteredRuns = filterRunsByScope(runs, scope, nowMs);
     const demoRuns = runs.filter((run) => run.is_demo);
-    const emptyRealRuns = runs.filter((run) => !run.is_demo && run.submitted === 0);
+    const emptyRealRuns = runs.filter(isEmptyRealRun);
+    const stalledLowProgressRuns = runs.filter((run) => isStalledLowProgressRun(run, nowMs));
     sendJson(response, 200, {
       scope,
       total: filteredRuns.length,
-      real_runs: runs.filter((run) => !run.is_demo && run.submitted > 0).length,
+      real_runs: runs.filter((run) => isVisibleRealRun(run, nowMs)).length,
       demo_runs: demoRuns.length,
       empty_real_runs: emptyRealRuns.length,
+      stalled_low_progress_runs: stalledLowProgressRuns.length,
       hidden_demo_runs: scope === "real" ? demoRuns.length : 0,
       hidden_empty_runs: scope === "real" ? emptyRealRuns.length : 0,
+      hidden_stalled_runs: scope === "real" ? stalledLowProgressRuns.length : 0,
       runs: filteredRuns,
     });
     return;

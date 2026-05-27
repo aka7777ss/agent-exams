@@ -501,7 +501,7 @@ async function renderAdmin() {
       <div>
         <p class="eyebrow">Stats</p>
         <h2>测试统计</h2>
-        <p>这里默认只展示有效真实 run：隐藏 demo/debug/test 数据，也隐藏 0/300 这类未开始答题的空 run。耗时目前按 run 的创建到最后提交粗略计算。</p>
+        <p>这里默认只展示有效真实 run：隐藏 demo/debug/test 数据、0/300 空 run，以及低进度且 10 分钟无更新的停滞 run。耗时目前按 run 的创建到最后提交粗略计算。</p>
         <div class="liveMeta">
           <span><i aria-hidden="true"></i>实时刷新中</span>
           <span>最后更新：${formatDate(new Date().toISOString())}</span>
@@ -538,6 +538,10 @@ async function renderAdmin() {
       <div class="metricCard softMetric">
         <span>隐藏空 Run</span>
         <strong>${stats.overview.hidden_empty_runs}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>隐藏停滞 Run</span>
+        <strong>${stats.overview.hidden_stalled_runs}</strong>
       </div>
     </section>
 
