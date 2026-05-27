@@ -124,8 +124,7 @@ async function renderStart() {
   const localBase = window.location.origin || config.local_base_url;
   const publicBase = config.public_base_url;
   const defaultAgentName = "my-agent";
-  const localCommand = buildRunnerCommand(localBase, defaultAgentName);
-  const publicCommand = publicBase ? buildRunnerCommand(publicBase, defaultAgentName) : "";
+  const command = buildRunnerCommand(localBase, defaultAgentName);
 
   taskData.textContent = "";
   setPageMode("home");
@@ -160,30 +159,18 @@ async function renderStart() {
       <section class="modeCard commandMode isFeatured">
         <p class="eyebrow">Command</p>
         <h3>命令行参与</h3>
-        <p>适合把一条命令复制给本地或云端 agent，让它在终端里自动拉题、输入答案、提交结果。</p>
+        <p>复制当前页面生成的命令给 agent，它会在终端里自动拉题、输入答案、提交结果。</p>
         <label>
           命令里的 Agent 名称
           <input name="command_agent_name" data-command-agent-name autocomplete="off" value="${escapeHtml(defaultAgentName)}" />
         </label>
-        <div class="commandGrid">
-          <section>
-            <div class="commandHead">
-              <strong>本地 agent</strong>
-              <button class="secondaryButton small" type="button" data-copy-command="local">复制</button>
-            </div>
-            <pre class="commandBlock" data-copy-command="local" title="点击复制命令"><code data-local-command>${escapeHtml(localCommand)}</code></pre>
-          </section>
-          <section>
-            <div class="commandHead">
-              <strong>云端 agent</strong>
-              ${publicBase ? '<button class="secondaryButton small" type="button" data-copy-command="public">复制</button>' : ""}
-            </div>
-            ${
-              publicBase
-                ? `<pre class="commandBlock" data-copy-command="public" title="点击复制命令"><code data-public-command>${escapeHtml(publicCommand)}</code></pre>`
-                : '<p class="hint">设置 <code>PUBLIC_BASE_URL</code> 后会在这里生成公网命令。</p>'
-            }
-          </section>
+        <div class="commandBox">
+          <div class="commandHead">
+            <strong>Agent 命令</strong>
+            <button class="secondaryButton small" type="button" data-copy-command>复制</button>
+          </div>
+          <pre class="commandBlock" data-copy-command title="点击复制命令"><code data-command>${escapeHtml(command)}</code></pre>
+          <p class="hint">本地页面会生成 localhost 命令；线上页面会生成公网命令。发给云端 agent 时请使用线上页面的命令。</p>
         </div>
       </section>
 
@@ -235,29 +222,24 @@ async function renderStart() {
       <span><strong>300</strong> 道题</span>
       <span>单选 / 多选 / JSON / 数值 / 短文本</span>
       <span>统一 run 与结果页</span>
-      <span>${publicBase ? "公网命令已启用" : "公网命令待配置"}</span>
+      <span>${publicBase ? "线上命令已启用" : "本地命令已启用"}</span>
     </div>
   `;
 
   const commandAgentName = app.querySelector("[data-command-agent-name]");
-  const localCommandEl = app.querySelector("[data-local-command]");
-  const publicCommandEl = app.querySelector("[data-public-command]");
+  const commandEl = app.querySelector("[data-command]");
 
   function refreshCommands() {
     const agentName = commandAgentName.value || "my-agent";
-    localCommandEl.textContent = buildRunnerCommand(localBase, agentName);
-    if (publicBase && publicCommandEl) {
-      publicCommandEl.textContent = buildRunnerCommand(publicBase, agentName);
-    }
+    commandEl.textContent = buildRunnerCommand(localBase, agentName);
   }
 
   commandAgentName.addEventListener("input", refreshCommands);
 
   app.querySelectorAll("[data-copy-command]").forEach((control) => {
     control.addEventListener("click", async () => {
-      const target = control.dataset.copyCommand === "public" ? publicCommandEl : localCommandEl;
-      await copyText(target.textContent);
-      const button = control.matches("button") ? control : app.querySelector(`button[data-copy-command="${control.dataset.copyCommand}"]`);
+      await copyText(commandEl.textContent);
+      const button = control.matches("button") ? control : app.querySelector("button[data-copy-command]");
       if (!button) return;
       button.textContent = "已复制";
       setTimeout(() => {
