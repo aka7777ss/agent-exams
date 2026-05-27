@@ -228,7 +228,7 @@ async function renderStart() {
     <div class="statusStrip">
       <span><strong>${examTaskCount}</strong> 题 / 次</span>
       <span>${bankTaskCount} 题题库分层抽样</span>
-      <span>单选 / 多选 / JSON / 数值 / 短文本</span>
+      <span>单选 / JSON / 数值</span>
       <span>统一 run 与结果页</span>
       <span>${publicBase ? "线上命令已启用" : "本地命令已启用"}</span>
     </div>
@@ -509,6 +509,8 @@ async function renderAdmin() {
   const calibrationIssues = stats.by_task.filter((task) => (task.calibration_priority || 0) > 0).length;
   const calibrationSampleLow = stats.by_task.filter((task) => task.attempts > 0 && task.calibration_issue === "sample_low").length;
   const recentRuns = stats.runs.slice(0, 20);
+  const moduleStats = stats.by_module || stats.by_category || [];
+  const difficultyScoreStats = stats.by_difficulty_score || [];
 
   app.innerHTML = html`
     <div class="adminHeader">
@@ -606,17 +608,17 @@ async function renderAdmin() {
       <article class="statPanel">
         <div class="statPanelHead">
           <h3>模块正确率</h3>
-          <span>category</span>
+          <span>module</span>
         </div>
         <div class="barList">
           ${
-            stats.by_category.length
-              ? stats.by_category
+            moduleStats.length
+              ? moduleStats
                   .map(
                     (item) => html`
                       <div class="barItem">
                         <div>
-                          <strong>${escapeHtml(item.category)}</strong>
+                          <strong>${escapeHtml(item.module || item.category)}</strong>
                           <span>${item.correct}/${item.attempts}</span>
                         </div>
                         <i><b style="width:${Math.round(item.accuracy * 100)}%"></b></i>
@@ -673,10 +675,11 @@ async function renderAdmin() {
             <span>题号</span>
             <span>模块</span>
             <span>题型</span>
-            <span>标注难度</span>
+            <span>难度分</span>
+            <span>L/F/D</span>
             <span>提交</span>
             <span>正确率</span>
-            <span>建议难度</span>
+            <span>建议分档</span>
             <span>状态</span>
           </div>
           ${
@@ -688,10 +691,11 @@ async function renderAdmin() {
                         <span>${escapeHtml(task.task_id)}</span>
                         <span>${escapeHtml(task.module || task.category)}</span>
                         <span>${escapeHtml(task.type)}</span>
-                        <span>${escapeHtml(task.difficulty)}</span>
+                        <span>${escapeHtml(task.difficulty_score ?? "-")} · ${escapeHtml(task.difficulty_band || task.difficulty)}</span>
+                        <span>${escapeHtml([task.cognitive_depth, task.format_complexity, task.info_density].filter(Boolean).join("/") || "-")}</span>
                         <span>${task.attempts}</span>
                         <span>${formatPercent(task.accuracy)}</span>
-                        <span>${escapeHtml(task.suggested_difficulty || "-")}</span>
+                        <span>${escapeHtml(task.suggested_difficulty_band || task.suggested_difficulty || "-")}</span>
                         <span><b class="calibrationBadge priority-${task.calibration_priority || 0}">${escapeHtml(task.calibration_status)}</b></span>
                       </div>
                     `,
@@ -700,7 +704,34 @@ async function renderAdmin() {
               : '<div class="emptyLine">还没有可校准的题目数据</div>'
           }
         </div>
-        <p class="hint">规则：提交数少于 5 先标为样本不足；easy 正确率低于 60% 视为可能低估；medium 高于 85% 可能高估、低于 30% 可能低估；hard 高于 70% 视为疑似伪 hard；低于 20% 优先检查 GT/grader。</p>
+        <p class="hint">规则：v6 使用 difficulty_score=L×F；1-3 为基础档，4-6 标准档，8-10 进阶档，12-15 高难档。提交数少于 5 先标为样本不足；正确率低于 20% 优先检查 GT/grader。</p>
+      </article>
+
+      <article class="statPanel">
+        <div class="statPanelHead">
+          <h3>难度分正确率</h3>
+          <span>difficulty_score</span>
+        </div>
+        <div class="barList">
+          ${
+            difficultyScoreStats.length
+              ? difficultyScoreStats
+                  .map(
+                    (item) => html`
+                      <div class="barItem">
+                        <div>
+                          <strong>${escapeHtml(item.difficulty_score)} · ${escapeHtml(item.difficulty_band)}</strong>
+                          <span>${item.correct}/${item.attempts}</span>
+                        </div>
+                        <i><b style="width:${Math.round(item.accuracy * 100)}%"></b></i>
+                        <em>${formatPercent(item.accuracy)}</em>
+                      </div>
+                    `,
+                  )
+                  .join("")
+              : '<p class="hint">还没有可统计的答题记录。</p>'
+          }
+        </div>
       </article>
 
       <article class="statPanel">

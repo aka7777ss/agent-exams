@@ -90,10 +90,6 @@ function loadTasks() {
   return tasks;
 }
 
-function taskKey(task) {
-  return `${task.type || "unknown"}::${task.difficulty || "unknown"}`;
-}
-
 function shuffle(items) {
   const next = [...items];
   for (let index = next.length - 1; index > 0; index -= 1) {
@@ -101,6 +97,18 @@ function shuffle(items) {
     [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
   }
   return next;
+}
+
+function groupBy(tasks, keyFn) {
+  const buckets = new Map();
+  for (const task of tasks) {
+    const key = String(keyFn(task) ?? "unknown");
+    if (!buckets.has(key)) {
+      buckets.set(key, { key, tasks: [] });
+    }
+    buckets.get(key).tasks.push(task);
+  }
+  return [...buckets.values()];
 }
 
 function allocateQuota(groups, targetCount, totalTasks) {
@@ -126,19 +134,228 @@ function allocateQuota(groups, targetCount, totalTasks) {
   return allocations;
 }
 
-function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount) {
-  const count = Math.max(1, Math.min(Number(requestedCount) || defaultExamTaskCount, tasks.length));
-  const buckets = new Map();
+function quotaMap(tasks, targetCount, keyFn) {
+  return new Map(allocateQuota(groupBy(tasks, keyFn), targetCount, tasks.length).map((group) => [String(group.key), group.count]));
+}
 
-  for (const task of tasks) {
-    const key = taskKey(task);
-    if (!buckets.has(key)) {
-      buckets.set(key, { key, tasks: [] });
+function countSelected(selected, keyFn) {
+  const counts = new Map();
+  for (const task of selected) {
+    const key = String(keyFn(task) ?? "unknown");
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function quotaDeviation(selected, targets, keyFn) {
+  const counts = countSelected(selected, keyFn);
+  let deviation = 0;
+  for (const [key, target] of targets) {
+    deviation += Math.abs((counts.get(key) || 0) - target);
+  }
+  for (const [key, count] of counts) {
+    if (!targets.has(key)) {
+      deviation += count;
     }
-    buckets.get(key).tasks.push(task);
+  }
+  return deviation;
+}
+
+function buildModuleScoreCellQuotas(tasks, targetCount) {
+  const modules = quotaMap(tasks, targetCount, (task) => task.module || "unknown");
+  const scores = quotaMap(tasks, targetCount, (task) => task.difficulty_score ?? "unknown");
+  const cellGroups = groupBy(tasks, (task) => `${task.module || "unknown"}::${task.difficulty_score ?? "unknown"}`);
+  const cellMap = new Map(
+    cellGroups.map((cell) => {
+      const [module, score] = cell.key.split("::");
+      return [cell.key, { ...cell, module, score, count: 0 }];
+    }),
+  );
+
+  const source = "source";
+  const sink = "sink";
+  const graph = new Map();
+
+  function ensureNode(node) {
+    if (!graph.has(node)) graph.set(node, []);
   }
 
-  const groups = [...buckets.values()];
+  function addEdge(from, to, capacity) {
+    ensureNode(from);
+    ensureNode(to);
+    const forward = { from, to, capacity, flow: 0, reverse: null };
+    const reverse = { from: to, to: from, capacity: 0, flow: 0, reverse: forward };
+    forward.reverse = reverse;
+    graph.get(from).push(forward);
+    graph.get(to).push(reverse);
+    return forward;
+  }
+
+  for (const [module, count] of modules) {
+    addEdge(source, `module:${module}`, count);
+  }
+
+  const moduleScoreEdges = [];
+  for (const cell of cellMap.values()) {
+    moduleScoreEdges.push({
+      cell,
+      edge: addEdge(`module:${cell.module}`, `score:${cell.score}`, cell.tasks.length),
+    });
+  }
+
+  for (const [score, count] of scores) {
+    addEdge(`score:${score}`, sink, count);
+  }
+
+  let totalFlow = 0;
+  while (true) {
+    const parents = new Map();
+    const queue = [source];
+    parents.set(source, null);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const node = queue[index];
+      for (const edge of graph.get(node) || []) {
+        if (parents.has(edge.to) || edge.capacity - edge.flow <= 0) continue;
+        parents.set(edge.to, edge);
+        if (edge.to === sink) break;
+        queue.push(edge.to);
+      }
+      if (parents.has(sink)) break;
+    }
+
+    if (!parents.has(sink)) break;
+
+    let increment = Infinity;
+    for (let edge = parents.get(sink); edge; edge = parents.get(edge.from)) {
+      increment = Math.min(increment, edge.capacity - edge.flow);
+    }
+    for (let edge = parents.get(sink); edge; edge = parents.get(edge.from)) {
+      edge.flow += increment;
+      edge.reverse.flow -= increment;
+    }
+    totalFlow += increment;
+  }
+
+  if (totalFlow !== targetCount) {
+    return {
+      cells: allocateQuota(cellGroups, targetCount, tasks.length).map((cell) => {
+        const [module, score] = cell.key.split("::");
+        return { ...cell, module, score };
+      }),
+      modules,
+      scores,
+    };
+  }
+
+  for (const { cell, edge } of moduleScoreEdges) {
+    cell.count = edge.flow;
+  }
+
+  return { cells: [...cellMap.values()], modules, scores };
+}
+
+function pickBalancedFromCell(candidates, count, selected, secondaryTargets) {
+  const remaining = shuffle(candidates);
+  const picked = [];
+
+  while (picked.length < count && remaining.length) {
+    const ranked = remaining
+      .map((task, index) => {
+        const trial = [...selected, ...picked, task];
+        const score =
+          -quotaDeviation(trial, secondaryTargets.type, (item) => item.type) * 4 -
+          quotaDeviation(trial, secondaryTargets.taskForm, (item) => item.task_form || "unknown") * 4 -
+          quotaDeviation(trial, secondaryTargets.difficulty, (item) => item.difficulty || "unknown") * 3 -
+          quotaDeviation(trial, secondaryTargets.cognitiveDepth, (item) => item.cognitive_depth || "unknown") -
+          quotaDeviation(trial, secondaryTargets.formatComplexity, (item) => item.format_complexity || "unknown") -
+          quotaDeviation(trial, secondaryTargets.infoDensity, (item) => item.info_density || "unknown") +
+          Math.random() * 0.01;
+        return { task, index, score };
+      })
+      .sort((left, right) => right.score - left.score);
+
+    const [choice] = ranked;
+    picked.push(choice.task);
+    remaining.splice(choice.index, 1);
+  }
+
+  return picked;
+}
+
+function secondaryPenalty(selected, secondaryTargets) {
+  return (
+    quotaDeviation(selected, secondaryTargets.type, (item) => item.type) * 4 +
+    quotaDeviation(selected, secondaryTargets.taskForm, (item) => item.task_form || "unknown") * 5 +
+    quotaDeviation(selected, secondaryTargets.difficulty, (item) => item.difficulty || "unknown") * 3 +
+    quotaDeviation(selected, secondaryTargets.cognitiveDepth, (item) => item.cognitive_depth || "unknown") +
+    quotaDeviation(selected, secondaryTargets.formatComplexity, (item) => item.format_complexity || "unknown") +
+    quotaDeviation(selected, secondaryTargets.infoDensity, (item) => item.info_density || "unknown")
+  );
+}
+
+function optimizeSecondaryBalance(selected, cells, secondaryTargets) {
+  const candidatesByCell = new Map(cells.map((cell) => [cell.key, shuffle(cell.tasks)]));
+  let current = [...selected];
+  let currentPenalty = secondaryPenalty(current, secondaryTargets);
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    let improved = false;
+    const selectedIds = new Set(current.map((task) => task.id));
+
+    for (let index = 0; index < current.length; index += 1) {
+      const task = current[index];
+      const key = `${task.module || "unknown"}::${task.difficulty_score ?? "unknown"}`;
+      const replacements = candidatesByCell.get(key) || [];
+
+      for (const replacement of replacements) {
+        if (selectedIds.has(replacement.id)) continue;
+        const trial = [...current];
+        trial[index] = replacement;
+        const trialPenalty = secondaryPenalty(trial, secondaryTargets);
+        if (trialPenalty < currentPenalty) {
+          selectedIds.delete(task.id);
+          selectedIds.add(replacement.id);
+          current = trial;
+          currentPenalty = trialPenalty;
+          improved = true;
+          break;
+        }
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return current;
+}
+
+function sampleV6ExamTasks(tasks, count) {
+  const { cells } = buildModuleScoreCellQuotas(tasks, count);
+  const secondaryTargets = {
+    type: quotaMap(tasks, count, (task) => task.type),
+    taskForm: quotaMap(tasks, count, (task) => task.task_form || "unknown"),
+    difficulty: quotaMap(tasks, count, (task) => task.difficulty || "unknown"),
+    cognitiveDepth: quotaMap(tasks, count, (task) => task.cognitive_depth || "unknown"),
+    formatComplexity: quotaMap(tasks, count, (task) => task.format_complexity || "unknown"),
+    infoDensity: quotaMap(tasks, count, (task) => task.info_density || "unknown"),
+  };
+  const selected = [];
+
+  for (const cell of shuffle(cells.filter((cell) => cell.count > 0)).sort((left, right) => left.tasks.length - right.tasks.length)) {
+    selected.push(...pickBalancedFromCell(cell.tasks, cell.count, selected, secondaryTargets));
+  }
+
+  if (selected.length < count) {
+    const selectedIds = new Set(selected.map((task) => task.id));
+    selected.push(...shuffle(tasks.filter((task) => !selectedIds.has(task.id))).slice(0, count - selected.length));
+  }
+
+  return shuffle(optimizeSecondaryBalance(selected.slice(0, count), cells, secondaryTargets));
+}
+
+function sampleLegacyExamTasks(tasks, count) {
+  const groups = groupBy(tasks, (task) => `${task.type || "unknown"}::${task.difficulty || "unknown"}`);
   const allocations = allocateQuota(groups, count, tasks.length);
   const selected = [];
 
@@ -153,6 +370,12 @@ function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount) {
   }
 
   return shuffle(selected).slice(0, count);
+}
+
+function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount) {
+  const count = Math.max(1, Math.min(Number(requestedCount) || defaultExamTaskCount, tasks.length));
+  const hasV6Difficulty = tasks.every((task) => task.module && task.difficulty_score && task.cognitive_depth && task.format_complexity);
+  return hasV6Difficulty ? sampleV6ExamTasks(tasks, count) : sampleLegacyExamTasks(tasks, count);
 }
 
 function tasksForRun(run, allTasks) {
@@ -686,17 +909,39 @@ function inferDifficultyFromAccuracy(accuracy) {
   return "hard";
 }
 
+function difficultyBand(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "unknown";
+  if (value <= 3) return "基础档";
+  if (value <= 6) return "标准档";
+  if (value <= 10) return "进阶档";
+  return "高难档";
+}
+
+function suggestedScoreBandFromAccuracy(accuracy) {
+  if (accuracy >= 0.85) return "基础档";
+  if (accuracy >= 0.55) return "标准档";
+  if (accuracy >= 0.3) return "进阶档";
+  return "高难档";
+}
+
 function calibrationSignal(taskStats) {
   const current = String(taskStats.difficulty || "unknown").toLowerCase();
   const attempts = Number(taskStats.attempts) || 0;
   const accuracy = Number(taskStats.accuracy) || 0;
   const suggested = inferDifficultyFromAccuracy(accuracy);
+  const score = Number(taskStats.difficulty_score);
+  const hasScore = Number.isFinite(score);
+  const band = difficultyBand(score);
+  const suggestedBand = suggestedScoreBandFromAccuracy(accuracy);
 
   if (attempts < 5) {
     return {
       calibration_status: "样本不足",
       calibration_issue: "sample_low",
       suggested_difficulty: null,
+      difficulty_band: band,
+      suggested_difficulty_band: null,
       calibration_priority: 0,
     };
   }
@@ -706,7 +951,53 @@ function calibrationSignal(taskStats) {
       calibration_status: "优先检查 GT/grader",
       calibration_issue: "grader_or_gt_check",
       suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
       calibration_priority: 3,
+    };
+  }
+
+  if (hasScore && score <= 3 && accuracy < 0.65) {
+    return {
+      calibration_status: "基础档疑似偏难",
+      calibration_issue: "score_band_underestimated",
+      suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
+      calibration_priority: 2,
+    };
+  }
+
+  if (hasScore && score >= 12 && accuracy > 0.7) {
+    return {
+      calibration_status: "高难档疑似偏易",
+      calibration_issue: "score_band_overestimated",
+      suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
+      calibration_priority: 2,
+    };
+  }
+
+  if (hasScore && score >= 8 && score <= 10 && accuracy > 0.8) {
+    return {
+      calibration_status: "进阶档疑似偏易",
+      calibration_issue: "score_band_overestimated",
+      suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
+      calibration_priority: 1,
+    };
+  }
+
+  if (hasScore && score >= 4 && score <= 8 && accuracy < 0.35) {
+    return {
+      calibration_status: "中档疑似偏难",
+      calibration_issue: "score_band_underestimated",
+      suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
+      calibration_priority: 2,
     };
   }
 
@@ -715,6 +1006,8 @@ function calibrationSignal(taskStats) {
       calibration_status: "疑似低估难度",
       calibration_issue: "difficulty_underestimated",
       suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
       calibration_priority: 2,
     };
   }
@@ -724,6 +1017,8 @@ function calibrationSignal(taskStats) {
       calibration_status: "疑似高估难度",
       calibration_issue: "difficulty_overestimated",
       suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
       calibration_priority: 1,
     };
   }
@@ -733,6 +1028,8 @@ function calibrationSignal(taskStats) {
       calibration_status: "疑似低估难度",
       calibration_issue: "difficulty_underestimated",
       suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
       calibration_priority: 2,
     };
   }
@@ -742,6 +1039,8 @@ function calibrationSignal(taskStats) {
       calibration_status: "疑似伪 hard",
       calibration_issue: "pseudo_hard",
       suggested_difficulty: suggested,
+      difficulty_band: band,
+      suggested_difficulty_band: suggestedBand,
       calibration_priority: 2,
     };
   }
@@ -750,6 +1049,8 @@ function calibrationSignal(taskStats) {
     calibration_status: "基本一致",
     calibration_issue: "aligned",
     suggested_difficulty: current,
+    difficulty_band: band,
+    suggested_difficulty_band: suggestedBand,
     calibration_priority: 0,
   };
 }
@@ -777,12 +1078,22 @@ function buildStats(store, tasks, scope = "real") {
         track: task.track || "",
         type: task.type,
         difficulty: task.difficulty || "unknown",
+        difficulty_score: task.difficulty_score ?? null,
+        cognitive_depth: task.cognitive_depth || "unknown",
+        format_complexity: task.format_complexity || "unknown",
+        info_density: task.info_density || "unknown",
         ...emptyBucket(),
       },
     ]),
   );
   const categoryStats = new Map();
   const typeStats = new Map();
+  const moduleStats = new Map();
+  const difficultyStats = new Map();
+  const difficultyScoreStats = new Map();
+  const cognitiveDepthStats = new Map();
+  const formatComplexityStats = new Map();
+  const infoDensityStats = new Map();
 
   for (const run of rawRuns) {
     if (!includedRunIds.has(run.id)) continue;
@@ -797,7 +1108,17 @@ function buildStats(store, tasks, scope = "real") {
       const buckets = [
         taskStats.get(task.id),
         categoryStats.get(task.category) || { category: task.category, ...emptyBucket() },
+        moduleStats.get(task.module) || { module: task.module || "unknown", ...emptyBucket() },
         typeStats.get(task.type) || { type: task.type, ...emptyBucket() },
+        difficultyStats.get(task.difficulty) || { difficulty: task.difficulty || "unknown", ...emptyBucket() },
+        difficultyScoreStats.get(String(task.difficulty_score)) || {
+          difficulty_score: task.difficulty_score ?? null,
+          difficulty_band: difficultyBand(task.difficulty_score),
+          ...emptyBucket(),
+        },
+        cognitiveDepthStats.get(task.cognitive_depth) || { cognitive_depth: task.cognitive_depth || "unknown", ...emptyBucket() },
+        formatComplexityStats.get(task.format_complexity) || { format_complexity: task.format_complexity || "unknown", ...emptyBucket() },
+        infoDensityStats.get(task.info_density) || { info_density: task.info_density || "unknown", ...emptyBucket() },
       ];
 
       for (const bucket of buckets) {
@@ -811,7 +1132,13 @@ function buildStats(store, tasks, scope = "real") {
       }
 
       categoryStats.set(task.category, buckets[1]);
-      typeStats.set(task.type, buckets[2]);
+      moduleStats.set(task.module, buckets[2]);
+      typeStats.set(task.type, buckets[3]);
+      difficultyStats.set(task.difficulty, buckets[4]);
+      difficultyScoreStats.set(String(task.difficulty_score), buckets[5]);
+      cognitiveDepthStats.set(task.cognitive_depth, buckets[6]);
+      formatComplexityStats.set(task.format_complexity, buckets[7]);
+      infoDensityStats.set(task.info_density, buckets[8]);
     }
   }
 
@@ -841,7 +1168,17 @@ function buildStats(store, tasks, scope = "real") {
     },
     runs: runs.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))),
     by_category: [...categoryStats.values()].map(summarizeBucket).sort((left, right) => left.category.localeCompare(right.category)),
+    by_module: [...moduleStats.values()].map(summarizeBucket).sort((left, right) => left.module.localeCompare(right.module)),
     by_type: [...typeStats.values()].map(summarizeBucket).sort((left, right) => left.type.localeCompare(right.type)),
+    by_difficulty: [...difficultyStats.values()].map(summarizeBucket).sort((left, right) => left.difficulty.localeCompare(right.difficulty)),
+    by_difficulty_score: [...difficultyScoreStats.values()]
+      .map(summarizeBucket)
+      .sort((left, right) => Number(left.difficulty_score) - Number(right.difficulty_score)),
+    by_cognitive_depth: [...cognitiveDepthStats.values()].map(summarizeBucket).sort((left, right) => left.cognitive_depth.localeCompare(right.cognitive_depth)),
+    by_format_complexity: [...formatComplexityStats.values()]
+      .map(summarizeBucket)
+      .sort((left, right) => left.format_complexity.localeCompare(right.format_complexity)),
+    by_info_density: [...infoDensityStats.values()].map(summarizeBucket).sort((left, right) => left.info_density.localeCompare(right.info_density)),
     by_task: byTask,
   };
 }
