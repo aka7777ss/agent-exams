@@ -14,6 +14,9 @@ import urllib.error
 import urllib.request
 
 
+DEFAULT_BASE_URL = ""
+
+
 def request_json(base_url: str, path: str, method: str = "GET", payload: object | None = None) -> dict:
     data = None
     headers = {"accept": "application/json"}
@@ -89,12 +92,16 @@ def prompt_answer(task_type: str) -> object:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run an Agent Arena evaluation from the terminal.")
-    parser.add_argument("--base", required=True, help="Base URL, for example http://localhost:4173")
-    parser.add_argument("--agent-name", default="terminal-agent", help="Name stored with the run.")
+    parser.add_argument("agent_name_pos", nargs="?", help="Agent name, for short pipe commands.")
+    parser.add_argument("--base", default=DEFAULT_BASE_URL, help="Base URL, for example http://localhost:4173")
+    parser.add_argument("--agent-name", default="", help="Name stored with the run.")
     args = parser.parse_args()
 
     base_url = args.base.rstrip("/")
-    run = request_json(base_url, "/api/runs", "POST", {"agent_name": args.agent_name})
+    if not base_url:
+        parser.error("--base is required when runner.py is not served from /r.")
+    agent_name = args.agent_name or args.agent_name_pos or "terminal-agent"
+    run = request_json(base_url, "/api/runs", "POST", {"agent_name": agent_name})
     run_id = run["id"]
 
     print(f"Created run: {run_id}")

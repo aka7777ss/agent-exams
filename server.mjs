@@ -268,6 +268,11 @@ function sendText(response, status, text) {
   response.end(text);
 }
 
+function sendPython(response, status, text) {
+  response.writeHead(status, { "content-type": "text/x-python; charset=utf-8" });
+  response.end(text);
+}
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -747,6 +752,14 @@ function serveStatic(response, pathname) {
   createReadStream(filePath).pipe(response);
 }
 
+function requestBaseUrl(request) {
+  const host = request.headers.host || `localhost:${port}`;
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const protocol = proto || (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
+  return `${protocol}://${host}`.replace(/\/$/, "");
+}
+
 ensureDataStore();
 const tasks = loadTasks();
 
@@ -756,6 +769,16 @@ createServer(async (request, response) => {
 
     if (url.pathname.startsWith("/api/")) {
       await handleApi(request, response, url, tasks);
+      return;
+    }
+
+    if (url.pathname === "/r") {
+      const baseUrl = requestBaseUrl(request);
+      const runner = readFileSync(join(root, "runner.py"), "utf8").replace(
+        'DEFAULT_BASE_URL = ""',
+        `DEFAULT_BASE_URL = ${JSON.stringify(baseUrl)}`,
+      );
+      sendPython(response, 200, runner);
       return;
     }
 

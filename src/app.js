@@ -99,7 +99,7 @@ function shellQuote(value) {
 
 function buildRunnerCommand(baseUrl, agentName) {
   const base = baseUrl.replace(/\/$/, "");
-  return `python3 -c "$(curl -fsSL ${shellQuote(`${base}/runner.py`)})" --base ${shellQuote(base)} --agent-name ${shellQuote(agentName || "my-agent")}`;
+  return `python3 <(curl -fsSL ${shellQuote(`${base}/r`)}) ${shellQuote(agentName || "my-agent")}`;
 }
 
 async function copyText(text) {
