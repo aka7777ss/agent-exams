@@ -494,7 +494,11 @@ function isDemoRun(run) {
   }
 
   const name = String(run.agent_name || "").toLowerCase();
-  return /(^|[-_\s])(smoke|demo|fixture)([-_\s]|$)/.test(name) || name.includes("gt-smoke") || name.includes("full-smoke");
+  return (
+    /(^|[-_\s])(smoke|demo|fixture|debug|test)([-_\s]|$)/.test(name) ||
+    name.includes("gt-smoke") ||
+    name.includes("full-smoke")
+  );
 }
 
 function buildRunSummary(run, tasks) {
@@ -516,7 +520,7 @@ function buildRunSummary(run, tasks) {
 function filterRunsByScope(runs, scope) {
   if (scope === "all") return runs;
   if (scope === "demo") return runs.filter((run) => run.is_demo);
-  return runs.filter((run) => !run.is_demo);
+  return runs.filter((run) => !run.is_demo && run.submitted > 0);
 }
 
 function emptyBucket() {
@@ -539,6 +543,8 @@ function buildStats(store, tasks, scope = "real") {
   const rawRuns = Object.values(store.runs || {});
   const allRuns = rawRuns.map((run) => buildRunSummary(run, tasks));
   const runs = filterRunsByScope(allRuns, scope);
+  const demoRuns = allRuns.filter((run) => run.is_demo);
+  const emptyRealRuns = allRuns.filter((run) => !run.is_demo && run.submitted === 0);
   const includedRunIds = new Set(runs.map((run) => run.id));
   const completedRuns = runs.filter((run) => run.complete).length;
   const attempts = runs.reduce((total, run) => total + run.submitted, 0);
@@ -580,9 +586,11 @@ function buildStats(store, tasks, scope = "real") {
     overview: {
       scope,
       total_runs: runs.length,
-      real_runs: allRuns.filter((run) => !run.is_demo).length,
-      demo_runs: allRuns.filter((run) => run.is_demo).length,
-      hidden_demo_runs: scope === "real" ? allRuns.filter((run) => run.is_demo).length : 0,
+      real_runs: allRuns.filter((run) => !run.is_demo && run.submitted > 0).length,
+      demo_runs: demoRuns.length,
+      empty_real_runs: emptyRealRuns.length,
+      hidden_demo_runs: scope === "real" ? demoRuns.length : 0,
+      hidden_empty_runs: scope === "real" ? emptyRealRuns.length : 0,
       completed_runs: completedRuns,
       total_tasks: tasks.length,
       attempts,
@@ -641,11 +649,16 @@ async function handleApi(request, response, url, tasks) {
       .map((run) => buildRunSummary(run, tasks))
       .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
     const filteredRuns = filterRunsByScope(runs, scope);
+    const demoRuns = runs.filter((run) => run.is_demo);
+    const emptyRealRuns = runs.filter((run) => !run.is_demo && run.submitted === 0);
     sendJson(response, 200, {
       scope,
       total: filteredRuns.length,
-      real_runs: runs.filter((run) => !run.is_demo).length,
-      demo_runs: runs.filter((run) => run.is_demo).length,
+      real_runs: runs.filter((run) => !run.is_demo && run.submitted > 0).length,
+      demo_runs: demoRuns.length,
+      empty_real_runs: emptyRealRuns.length,
+      hidden_demo_runs: scope === "real" ? demoRuns.length : 0,
+      hidden_empty_runs: scope === "real" ? emptyRealRuns.length : 0,
       runs: filteredRuns,
     });
     return;
