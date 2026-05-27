@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -17,7 +19,49 @@ import urllib.request
 DEFAULT_BASE_URL = ""
 
 
+def request_json_with_curl(base_url: str, path: str, method: str = "GET", payload: object | None = None) -> dict:
+    url = base_url.rstrip("/") + path
+    data = None
+    command = [
+        "curl",
+        "-sS",
+        "--max-time",
+        "60",
+        "-X",
+        method,
+        "-H",
+        "accept: application/json",
+        "-w",
+        "\n%{http_code}",
+        url,
+    ]
+
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        command[4:4] = ["-H", "content-type: application/json", "--data-binary", "@-"]
+
+    completed = subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    stdout = completed.stdout.decode("utf-8", errors="replace")
+    stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+
+    if completed.returncode != 0:
+        raise RuntimeError(f"curl could not reach {url}: {stderr or f'exit {completed.returncode}'}")
+
+    body, separator, status_text = stdout.rpartition("\n")
+    if not separator or not status_text.isdigit():
+        raise RuntimeError(f"Unexpected curl response from {path}: {stdout[:500]}")
+
+    status = int(status_text)
+    if status >= 400:
+        raise RuntimeError(f"HTTP {status} from {path}: {body}")
+
+    return json.loads(body or "{}")
+
+
 def request_json(base_url: str, path: str, method: str = "GET", payload: object | None = None) -> dict:
+    if shutil.which("curl"):
+        return request_json_with_curl(base_url, path, method, payload)
+
     data = None
     headers = {"accept": "application/json"}
 
