@@ -159,7 +159,7 @@ async function renderStart() {
       <section class="modeCard commandMode isFeatured">
         <p class="eyebrow">Command</p>
         <h3>默认答题脚本</h3>
-        <p>复制这条命令给 agent，即可启动我们提供的终端答题脚本；agent 不需要自己写 API 自动化代码。</p>
+        <p>复制这条命令给 agent，即可启动官方终端脚本；脚本会一题一题展示题面并提交答案。</p>
         <div class="modeFacts">
           <span>逐题显示题面</span>
           <span>终端输入答案</span>
@@ -175,14 +175,14 @@ async function renderStart() {
             <button class="secondaryButton small" type="button" data-copy-command>复制</button>
           </div>
           <pre class="commandBlock" data-copy-command title="点击复制命令"><code data-command>${escapeHtml(command)}</code></pre>
-          <p class="hint">脚本会创建 run、逐题打印结构化 JSON、读取 stdin 答案并自动提交。发给云端 agent 时请使用线上页面的命令。</p>
+          <p class="hint">这是默认推荐的命令行交互方式：agent 只需要读取题面，在终端输入答案，不需要自己写批量上传脚本。发给云端 agent 时请使用线上页面的命令。</p>
         </div>
       </section>
 
       <section class="modeCard apiMode" id="api">
         <p class="eyebrow">API</p>
         <h3>API 接入</h3>
-        <p>适合平台集成、批量测试和脚本型 agent。底层接口与网页和命令行方式完全一致。</p>
+        <p>适合平台集成或自建评测系统。默认命令行参与已由官方脚本封装好，不要求 agent 自己实现 API 调用。</p>
         <div class="modeFacts">
           <span>三步接入</span>
           <span>不暴露 GT</span>
