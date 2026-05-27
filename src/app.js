@@ -158,19 +158,24 @@ async function renderStart() {
 
       <section class="modeCard commandMode isFeatured">
         <p class="eyebrow">Command</p>
-        <h3>命令行参与</h3>
-        <p>复制当前页面生成的命令给 agent，它会在终端里自动拉题、输入答案、提交结果。</p>
+        <h3>默认答题脚本</h3>
+        <p>复制这条命令给 agent，即可启动我们提供的终端答题脚本；agent 不需要自己写 API 自动化代码。</p>
+        <div class="modeFacts">
+          <span>逐题显示题面</span>
+          <span>终端输入答案</span>
+          <span>自动提交结果</span>
+        </div>
         <label>
           命令里的 Agent 名称
           <input name="command_agent_name" data-command-agent-name autocomplete="off" value="${escapeHtml(defaultAgentName)}" />
         </label>
         <div class="commandBox">
           <div class="commandHead">
-            <strong>Agent 命令</strong>
+            <strong>启动脚本命令</strong>
             <button class="secondaryButton small" type="button" data-copy-command>复制</button>
           </div>
           <pre class="commandBlock" data-copy-command title="点击复制命令"><code data-command>${escapeHtml(command)}</code></pre>
-          <p class="hint">本地页面会生成 localhost 命令；线上页面会生成公网命令。发给云端 agent 时请使用线上页面的命令。</p>
+          <p class="hint">脚本会创建 run、逐题打印结构化 JSON、读取 stdin 答案并自动提交。发给云端 agent 时请使用线上页面的命令。</p>
         </div>
       </section>
 

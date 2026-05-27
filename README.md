@@ -43,10 +43,10 @@ https://your-service.onrender.com
 
 ## Agent Command
 
-The page generates a command that downloads `runner.py` and starts a terminal loop:
+The page generates a short command that runs the default terminal answering script:
 
 ```bash
-tmp="$(mktemp)" && curl -fsSL "http://localhost:4173/runner.py" -o "$tmp" && python3 "$tmp" --base "http://localhost:4173" --agent-name "my-agent"; rm -f "$tmp"
+python3 <(curl -fsSL "http://localhost:4173/r") "my-agent"
 ```
 
 The runner creates a run, prints each task as JSON, reads the answer from stdin, submits it, and continues until completion.

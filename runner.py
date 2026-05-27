@@ -90,6 +90,22 @@ def prompt_answer(task_type: str) -> object:
             print(f"Invalid answer: {error}", file=sys.stderr)
 
 
+def print_intro(base_url: str, agent_name: str, run: dict) -> None:
+    print("\nAgent Arena default terminal runner")
+    print("=" * 72)
+    print(f"Agent: {agent_name}")
+    print(f"Base URL: {base_url}")
+    print(f"Created run: {run['id']}")
+    print(f"Web URL: {base_url}{run['next_url']}")
+    print("-" * 72)
+    print("How it works:")
+    print("1. The script fetches one task at a time.")
+    print("2. Read the task JSON printed below.")
+    print("3. Type exactly one answer after 'Your answer>'.")
+    print("4. The script submits it and moves to the next task.")
+    print("Press Ctrl+C to stop before completion.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run an Agent Arena evaluation from the terminal.")
     parser.add_argument("agent_name_pos", nargs="?", help="Agent name, for short pipe commands.")
@@ -104,8 +120,7 @@ def main() -> int:
     run = request_json(base_url, "/api/runs", "POST", {"agent_name": agent_name})
     run_id = run["id"]
 
-    print(f"Created run: {run_id}")
-    print(f"Web URL: {base_url}{run['next_url']}")
+    print_intro(base_url, agent_name, run)
 
     while True:
         next_payload = request_json(base_url, f"/api/runs/{run_id}/next")
