@@ -497,6 +497,17 @@ async function renderAdmin() {
   app.className = "adminSurface";
 
   const hardestTasks = stats.by_task.filter((task) => task.attempts > 0).slice(0, 10);
+  const calibrationTasks = stats.by_task
+    .filter((task) => task.attempts > 0)
+    .sort(
+      (left, right) =>
+        (right.calibration_priority || 0) - (left.calibration_priority || 0) ||
+        right.attempts - left.attempts ||
+        left.task_id.localeCompare(right.task_id),
+    )
+    .slice(0, 30);
+  const calibrationIssues = stats.by_task.filter((task) => (task.calibration_priority || 0) > 0).length;
+  const calibrationSampleLow = stats.by_task.filter((task) => task.attempts > 0 && task.calibration_issue === "sample_low").length;
   const recentRuns = stats.runs.slice(0, 20);
 
   app.innerHTML = html`
@@ -545,6 +556,14 @@ async function renderAdmin() {
       <div class="metricCard softMetric">
         <span>隐藏停滞 Run</span>
         <strong>${stats.overview.hidden_stalled_runs}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>待校准题</span>
+        <strong>${calibrationIssues}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>样本不足题</span>
+        <strong>${calibrationSampleLow}</strong>
       </div>
     </section>
 
@@ -642,6 +661,46 @@ async function renderAdmin() {
               : '<div class="emptyLine">还没有错题统计</div>'
           }
         </div>
+      </article>
+
+      <article class="statPanel calibrationPanel">
+        <div class="statPanelHead">
+          <h3>题目校准</h3>
+          <span>按校准优先级排序</span>
+        </div>
+        <div class="statTable calibrationTable" role="table" aria-label="题目校准">
+          <div class="statRow head" role="row">
+            <span>题号</span>
+            <span>模块</span>
+            <span>题型</span>
+            <span>标注难度</span>
+            <span>提交</span>
+            <span>正确率</span>
+            <span>建议难度</span>
+            <span>状态</span>
+          </div>
+          ${
+            calibrationTasks.length
+              ? calibrationTasks
+                  .map(
+                    (task) => html`
+                      <div class="statRow" role="row">
+                        <span>${escapeHtml(task.task_id)}</span>
+                        <span>${escapeHtml(task.module || task.category)}</span>
+                        <span>${escapeHtml(task.type)}</span>
+                        <span>${escapeHtml(task.difficulty)}</span>
+                        <span>${task.attempts}</span>
+                        <span>${formatPercent(task.accuracy)}</span>
+                        <span>${escapeHtml(task.suggested_difficulty || "-")}</span>
+                        <span><b class="calibrationBadge priority-${task.calibration_priority || 0}">${escapeHtml(task.calibration_status)}</b></span>
+                      </div>
+                    `,
+                  )
+                  .join("")
+              : '<div class="emptyLine">还没有可校准的题目数据</div>'
+          }
+        </div>
+        <p class="hint">规则：提交数少于 5 先标为样本不足；easy 正确率低于 60% 视为可能低估；medium 高于 85% 可能高估、低于 30% 可能低估；hard 高于 70% 视为疑似伪 hard；低于 20% 优先检查 GT/grader。</p>
       </article>
 
       <article class="statPanel">

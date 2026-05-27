@@ -664,14 +664,92 @@ function emptyBucket() {
     attempts: 0,
     correct: 0,
     score: 0,
+    timed_attempts: 0,
+    submit_offset_total_ms: 0,
     accuracy: 0,
   };
 }
 
 function summarizeBucket(bucket) {
+  const averageSubmitOffsetMs = bucket.timed_attempts ? Math.round(bucket.submit_offset_total_ms / bucket.timed_attempts) : null;
   return {
     ...bucket,
+    average_submit_offset_ms: averageSubmitOffsetMs,
     accuracy: bucket.attempts ? bucket.correct / bucket.attempts : 0,
+  };
+}
+
+function inferDifficultyFromAccuracy(accuracy) {
+  if (accuracy >= 0.8) return "easy";
+  if (accuracy >= 0.4) return "medium";
+  return "hard";
+}
+
+function calibrationSignal(taskStats) {
+  const current = String(taskStats.difficulty || "unknown").toLowerCase();
+  const attempts = Number(taskStats.attempts) || 0;
+  const accuracy = Number(taskStats.accuracy) || 0;
+  const suggested = inferDifficultyFromAccuracy(accuracy);
+
+  if (attempts < 5) {
+    return {
+      calibration_status: "样本不足",
+      calibration_issue: "sample_low",
+      suggested_difficulty: null,
+      calibration_priority: 0,
+    };
+  }
+
+  if (accuracy < 0.2) {
+    return {
+      calibration_status: "优先检查 GT/grader",
+      calibration_issue: "grader_or_gt_check",
+      suggested_difficulty: suggested,
+      calibration_priority: 3,
+    };
+  }
+
+  if (current === "easy" && accuracy < 0.6) {
+    return {
+      calibration_status: "疑似低估难度",
+      calibration_issue: "difficulty_underestimated",
+      suggested_difficulty: suggested,
+      calibration_priority: 2,
+    };
+  }
+
+  if (current === "medium" && accuracy > 0.85) {
+    return {
+      calibration_status: "疑似高估难度",
+      calibration_issue: "difficulty_overestimated",
+      suggested_difficulty: suggested,
+      calibration_priority: 1,
+    };
+  }
+
+  if (current === "medium" && accuracy < 0.3) {
+    return {
+      calibration_status: "疑似低估难度",
+      calibration_issue: "difficulty_underestimated",
+      suggested_difficulty: suggested,
+      calibration_priority: 2,
+    };
+  }
+
+  if (current === "hard" && accuracy > 0.7) {
+    return {
+      calibration_status: "疑似伪 hard",
+      calibration_issue: "pseudo_hard",
+      suggested_difficulty: suggested,
+      calibration_priority: 2,
+    };
+  }
+
+  return {
+    calibration_status: "基本一致",
+    calibration_issue: "aligned",
+    suggested_difficulty: current,
+    calibration_priority: 0,
   };
 }
 
@@ -688,7 +766,20 @@ function buildStats(store, tasks, scope = "real") {
   const attempts = runs.reduce((total, run) => total + run.submitted, 0);
   const score = runs.reduce((total, run) => total + run.score, 0);
   const totalDuration = runs.reduce((total, run) => total + (run.duration_ms || 0), 0);
-  const taskStats = new Map(tasks.map((task) => [task.id, { task_id: task.id, category: task.category, type: task.type, ...emptyBucket() }]));
+  const taskStats = new Map(
+    tasks.map((task) => [
+      task.id,
+      {
+        task_id: task.id,
+        category: task.category,
+        module: task.module || "",
+        track: task.track || "",
+        type: task.type,
+        difficulty: task.difficulty || "unknown",
+        ...emptyBucket(),
+      },
+    ]),
+  );
   const categoryStats = new Map();
   const typeStats = new Map();
 
@@ -698,6 +789,9 @@ function buildStats(store, tasks, scope = "real") {
     for (const task of tasksForRun(run, tasks)) {
       const answer = run.answers[task.id];
       if (!answer) continue;
+      const started = Date.parse(run.created_at);
+      const submittedAt = Date.parse(answer.submitted_at);
+      const submitOffsetMs = Number.isFinite(started) && Number.isFinite(submittedAt) ? Math.max(0, submittedAt - started) : null;
 
       const buckets = [
         taskStats.get(task.id),
@@ -709,6 +803,10 @@ function buildStats(store, tasks, scope = "real") {
         bucket.attempts += 1;
         bucket.correct += answer.correct ? 1 : 0;
         bucket.score += answer.score || 0;
+        if (submitOffsetMs !== null) {
+          bucket.timed_attempts += 1;
+          bucket.submit_offset_total_ms += submitOffsetMs;
+        }
       }
 
       categoryStats.set(task.category, buckets[1]);
@@ -718,6 +816,7 @@ function buildStats(store, tasks, scope = "real") {
 
   const byTask = [...taskStats.values()]
     .map(summarizeBucket)
+    .map((task) => ({ ...task, ...calibrationSignal(task) }))
     .sort((left, right) => left.accuracy - right.accuracy || right.attempts - left.attempts || left.task_id.localeCompare(right.task_id));
 
   return {

@@ -918,6 +918,43 @@ pre {
   grid-template-columns: 80px minmax(180px, 1fr) 120px 70px 80px;
 }
 
+.calibrationPanel {
+  grid-column: 1 / -1;
+}
+
+.calibrationTable .statRow {
+  min-width: 980px;
+  grid-template-columns: 80px minmax(160px, 1fr) 110px 90px 70px 80px 90px 150px;
+}
+
+.calibrationBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #5364ff;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.calibrationBadge.priority-1 {
+  background: #fff7e6;
+  color: #a16207;
+}
+
+.calibrationBadge.priority-2 {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.calibrationBadge.priority-3 {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .statRow a {
   color: #5364ff;
   font-weight: 800;
