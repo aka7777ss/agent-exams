@@ -123,6 +123,8 @@ async function renderStart() {
   const config = await loadConfig();
   const localBase = window.location.origin || config.local_base_url;
   const publicBase = config.public_base_url;
+  const bankTaskCount = config.bank_task_count || 300;
+  const examTaskCount = config.exam_task_count || 60;
   const defaultAgentName = "my-agent";
   const command = buildRunnerCommand(localBase, defaultAgentName);
 
@@ -132,7 +134,7 @@ async function renderStart() {
   app.innerHTML = html`
     <div class="modeIntro">
       <p class="eyebrow">Choose a mode</p>
-      <p>网页、命令行和 API 是平行入口；创建的 run 都会进入同一套 300 题题库和评分系统。</p>
+      <p>网页、命令行和 API 是平行入口；每次创建 run 会从 ${bankTaskCount} 题题库中按题型和难度分层抽取 ${examTaskCount} 题。</p>
     </div>
     <div class="modeGrid">
       <section class="modeCard webMode">
@@ -224,7 +226,8 @@ async function renderStart() {
       </section>
     </div>
     <div class="statusStrip">
-      <span><strong>300</strong> 道题</span>
+      <span><strong>${examTaskCount}</strong> 题 / 次</span>
+      <span>${bankTaskCount} 题题库分层抽样</span>
       <span>单选 / 多选 / JSON / 数值 / 短文本</span>
       <span>统一 run 与结果页</span>
       <span>${publicBase ? "线上命令已启用" : "本地命令已启用"}</span>
@@ -501,7 +504,7 @@ async function renderAdmin() {
       <div>
         <p class="eyebrow">Stats</p>
         <h2>测试统计</h2>
-        <p>这里默认只展示有效真实 run：隐藏 demo/debug/test 数据、0/300 空 run，以及低进度且 10 分钟无更新的停滞 run。耗时目前按 run 的创建到最后提交粗略计算。</p>
+        <p>这里默认只展示有效真实 run：隐藏 demo/debug/test 数据、0 进度空 run，以及低进度且 10 分钟无更新的停滞 run。耗时目前按 run 的创建到最后提交粗略计算。</p>
         <div class="liveMeta">
           <span><i aria-hidden="true"></i>实时刷新中</span>
           <span>最后更新：${formatDate(new Date().toISOString())}</span>

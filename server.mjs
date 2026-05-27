@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const port = Number(process.env.PORT || 4173);
@@ -13,6 +13,8 @@ const runsFile = join(storageDir, "runs.json");
 const legacyRunsFile = join(dataDir, "runs.json");
 const dbFile = join(storageDir, "arena.sqlite");
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
+const configuredExamTaskCount = Number(process.env.EXAM_TASK_COUNT || 60);
+const defaultExamTaskCount = Number.isFinite(configuredExamTaskCount) && configuredExamTaskCount > 0 ? Math.floor(configuredExamTaskCount) : 60;
 const stalledLowProgressMs = 10 * 60 * 1000;
 const lowProgressSubmissionLimit = 3;
 
@@ -51,6 +53,15 @@ function ensureDataStore() {
     );
     CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at);
     CREATE INDEX IF NOT EXISTS idx_answers_task_id ON answers(task_id);
+    CREATE TABLE IF NOT EXISTS run_tasks (
+      run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (run_id, position),
+      UNIQUE (run_id, task_id),
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_run_tasks_run_id ON run_tasks(run_id);
   `);
   migrateRunsJsonToDb();
 }
@@ -76,6 +87,80 @@ function loadTasks() {
   }
 
   return tasks;
+}
+
+function taskKey(task) {
+  return `${task.type || "unknown"}::${task.difficulty || "unknown"}`;
+}
+
+function shuffle(items) {
+  const next = [...items];
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+  }
+  return next;
+}
+
+function allocateQuota(groups, targetCount, totalTasks) {
+  const allocations = groups.map((group) => {
+    const raw = (group.tasks.length / totalTasks) * targetCount;
+    return {
+      ...group,
+      count: Math.floor(raw),
+      remainder: raw - Math.floor(raw),
+    };
+  });
+
+  let assigned = allocations.reduce((total, group) => total + group.count, 0);
+  const byRemainder = [...allocations].sort((left, right) => right.remainder - left.remainder || right.tasks.length - left.tasks.length);
+
+  for (const group of byRemainder) {
+    if (assigned >= targetCount) break;
+    if (group.count >= group.tasks.length) continue;
+    group.count += 1;
+    assigned += 1;
+  }
+
+  return allocations;
+}
+
+function sampleExamTasks(tasks, requestedCount = defaultExamTaskCount) {
+  const count = Math.max(1, Math.min(Number(requestedCount) || defaultExamTaskCount, tasks.length));
+  const buckets = new Map();
+
+  for (const task of tasks) {
+    const key = taskKey(task);
+    if (!buckets.has(key)) {
+      buckets.set(key, { key, tasks: [] });
+    }
+    buckets.get(key).tasks.push(task);
+  }
+
+  const groups = [...buckets.values()];
+  const allocations = allocateQuota(groups, count, tasks.length);
+  const selected = [];
+
+  for (const group of allocations) {
+    selected.push(...shuffle(group.tasks).slice(0, group.count));
+  }
+
+  if (selected.length < count) {
+    const selectedIds = new Set(selected.map((task) => task.id));
+    const remaining = shuffle(tasks.filter((task) => !selectedIds.has(task.id)));
+    selected.push(...remaining.slice(0, count - selected.length));
+  }
+
+  return shuffle(selected).slice(0, count);
+}
+
+function tasksForRun(run, allTasks) {
+  if (!run?.task_ids?.length) {
+    return allTasks;
+  }
+
+  const byId = new Map(allTasks.map((task) => [task.id, task]));
+  return run.task_ids.map((taskId) => byId.get(taskId)).filter(Boolean);
 }
 
 function sqlString(value) {
@@ -108,6 +193,7 @@ function rowToRun(row) {
     data_scope: row.data_scope,
     is_demo: Boolean(row.is_demo),
     answers: {},
+    task_ids: [],
   };
 }
 
@@ -133,9 +219,16 @@ function readAllRuns() {
   const runs = {};
   const runRows = dbQuery("SELECT id, agent_name, created_at, updated_at, data_scope, is_demo FROM runs;");
   const answerRows = dbQuery("SELECT run_id, task_id, answer_json, correct, score, submitted_at FROM answers;");
+  const taskRows = dbQuery("SELECT run_id, task_id, position FROM run_tasks ORDER BY run_id, position;");
 
   for (const row of runRows) {
     runs[row.id] = rowToRun(row);
+  }
+
+  for (const row of taskRows) {
+    if (runs[row.run_id]) {
+      runs[row.run_id].task_ids.push(row.task_id);
+    }
   }
 
   for (const row of answerRows) {
@@ -159,6 +252,14 @@ function readRun(runId) {
   }
 
   const run = rowToRun(rows[0]);
+  const taskRows = dbQuery(`
+    SELECT run_id, task_id, position
+    FROM run_tasks
+    WHERE run_id = ${sqlString(runId)}
+    ORDER BY position;
+  `);
+  run.task_ids = taskRows.map((row) => row.task_id);
+
   const answers = dbQuery(`
     SELECT run_id, task_id, answer_json, correct, score, submitted_at
     FROM answers
@@ -171,7 +272,8 @@ function readRun(runId) {
 }
 
 function createRun(run) {
-  dbExec(`
+  const statements = [`
+    BEGIN IMMEDIATE;
     INSERT INTO runs (id, agent_name, created_at, updated_at, data_scope, is_demo)
     VALUES (
       ${sqlString(run.id)},
@@ -181,7 +283,17 @@ function createRun(run) {
       ${sqlString(run.data_scope)},
       ${run.is_demo ? 1 : 0}
     );
-  `);
+  `];
+
+  (run.task_ids || []).forEach((taskId, index) => {
+    statements.push(`
+      INSERT INTO run_tasks (run_id, task_id, position)
+      VALUES (${sqlString(run.id)}, ${sqlString(taskId)}, ${index + 1});
+    `);
+  });
+
+  statements.push("COMMIT;");
+  dbExec(statements.join("\n"));
 }
 
 function upsertAnswer(runId, taskId, answer, graded, submittedAt) {
@@ -453,27 +565,32 @@ function getRunOr404(runId) {
 }
 
 function buildRunState(run, tasks) {
-  const submitted = Object.keys(run.answers).length;
-  const score = Object.values(run.answers).reduce((total, answer) => total + answer.score, 0);
+  const examTasks = tasksForRun(run, tasks);
+  const examTaskIds = new Set(examTasks.map((task) => task.id));
+  const examAnswers = Object.values(run.answers).filter((answer) => examTaskIds.has(answer.task_id));
+  const submitted = examAnswers.length;
+  const score = examAnswers.reduce((total, answer) => total + answer.score, 0);
   return {
     id: run.id,
     agent_name: run.agent_name,
     created_at: run.created_at,
     updated_at: run.updated_at,
-    total_tasks: tasks.length,
+    total_tasks: examTasks.length,
+    bank_tasks: tasks.length,
     submitted,
-    remaining: tasks.length - submitted,
+    remaining: examTasks.length - submitted,
     score,
-    complete: submitted >= tasks.length,
+    complete: submitted >= examTasks.length,
   };
 }
 
 function buildResult(run, tasks) {
   const state = buildRunState(run, tasks);
+  const examTasks = tasksForRun(run, tasks);
   return {
     ...state,
     accuracy: state.total_tasks ? state.score / state.total_tasks : 0,
-    answers: tasks.map((task, index) => {
+    answers: examTasks.map((task, index) => {
       const answer = run.answers[task.id];
       return {
         index: index + 1,
@@ -578,7 +695,7 @@ function buildStats(store, tasks, scope = "real") {
   for (const run of rawRuns) {
     if (!includedRunIds.has(run.id)) continue;
 
-    for (const task of tasks) {
+    for (const task of tasksForRun(run, tasks)) {
       const answer = run.answers[task.id];
       if (!answer) continue;
 
@@ -615,7 +732,8 @@ function buildStats(store, tasks, scope = "real") {
       hidden_empty_runs: scope === "real" ? emptyRealRuns.length : 0,
       hidden_stalled_runs: scope === "real" ? stalledLowProgressRuns.length : 0,
       completed_runs: completedRuns,
-      total_tasks: tasks.length,
+      total_tasks: Math.min(defaultExamTaskCount, tasks.length),
+      bank_tasks: tasks.length,
       attempts,
       score,
       accuracy: attempts ? score / attempts : 0,
@@ -629,14 +747,15 @@ function buildStats(store, tasks, scope = "real") {
 }
 
 function nextTaskForRun(run, tasks) {
-  const nextIndex = tasks.findIndex((task) => !run.answers[task.id]);
+  const examTasks = tasksForRun(run, tasks);
+  const nextIndex = examTasks.findIndex((task) => !run.answers[task.id]);
   if (nextIndex === -1) {
     return null;
   }
   return {
     index: nextIndex + 1,
-    total: tasks.length,
-    task: publicTask(tasks[nextIndex]),
+    total: examTasks.length,
+    task: publicTask(examTasks[nextIndex]),
   };
 }
 
@@ -649,7 +768,7 @@ async function handleApi(request, response, url, tasks) {
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (request.method === "GET" && url.pathname === "/api/health") {
-    sendJson(response, 200, { ok: true, tasks: tasks.length });
+    sendJson(response, 200, { ok: true, tasks: tasks.length, exam_tasks: Math.min(defaultExamTaskCount, tasks.length) });
     return;
   }
 
@@ -657,6 +776,8 @@ async function handleApi(request, response, url, tasks) {
     sendJson(response, 200, {
       public_base_url: publicBaseUrl,
       local_base_url: `http://localhost:${port}`,
+      bank_task_count: tasks.length,
+      exam_task_count: Math.min(defaultExamTaskCount, tasks.length),
     });
     return;
   }
@@ -702,6 +823,7 @@ async function handleApi(request, response, url, tasks) {
     const id = `run_${randomUUID()}`;
     const agentName = String(body.agent_name || body.agentName || "anonymous-agent").slice(0, 80);
     const dataScope = String(body.data_scope || body.dataScope || "").toLowerCase();
+    const examTasks = sampleExamTasks(tasks, defaultExamTaskCount);
     const run = {
       id,
       agent_name: agentName,
@@ -709,6 +831,7 @@ async function handleApi(request, response, url, tasks) {
       updated_at: now,
       data_scope: dataScope === "demo" ? "demo" : "real",
       is_demo: dataScope === "demo" || isDemoRun({ agent_name: agentName }),
+      task_ids: examTasks.map((task) => task.id),
       answers: {},
     };
 
