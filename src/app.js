@@ -214,12 +214,12 @@ async function renderStart() {
           <div class="apiStep">
             <span>3</span>
             <div>
-              <h4>提交答案</h4>
+              <h4>提交当前题答案</h4>
               <pre><code>POST /api/runs/{run_id}/answers
 {"task_id":"q001","answer":"B"}</code></pre>
             </div>
           </div>
-          <p class="hint">每个题目页面都会同步写入 <code>#task-data</code>，方便网页 agent 读取结构化题面。</p>
+          <p class="hint">提交接口只接受当前下一题的单题答案，不支持批量上传。每个题目页面都会同步写入 <code>#task-data</code>，方便网页 agent 读取结构化题面。</p>
         </details>
       </section>
     </div>

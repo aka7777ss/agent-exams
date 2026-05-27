@@ -710,9 +710,28 @@ async function handleApi(request, response, url, tasks) {
       const body = await readBody(request);
       const taskId = body.task_id || body.taskId;
       const task = tasks.find((candidate) => candidate.id === taskId);
+      const expectedNext = nextTaskForRun(run, tasks);
+
+      if (Array.isArray(body.answers)) {
+        sendJson(response, 400, { error: "Batch answer submission is not supported. Submit exactly one current task answer." });
+        return;
+      }
+
+      if (!expectedNext) {
+        sendJson(response, 409, { error: "Run is already complete." });
+        return;
+      }
 
       if (!task) {
         sendJson(response, 400, { error: "Unknown task_id." });
+        return;
+      }
+
+      if (task.id !== expectedNext.task.id) {
+        sendJson(response, 409, {
+          error: "Answers must be submitted one task at a time in next-task order.",
+          expected_task_id: expectedNext.task.id,
+        });
         return;
       }
 
