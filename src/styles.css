@@ -927,6 +927,16 @@ pre {
   grid-template-columns: 80px minmax(150px, 1fr) 100px 120px 110px 70px 80px 110px 150px;
 }
 
+.stringRiskTable .statRow {
+  min-width: 980px;
+  grid-template-columns: 80px minmax(150px, 1fr) 150px 80px 60px minmax(320px, 2fr);
+}
+
+.literalOnlyTable .statRow {
+  min-width: 980px;
+  grid-template-columns: 80px 150px 60px minmax(280px, 1fr) minmax(280px, 1fr);
+}
+
 .calibrationBadge {
   display: inline-flex;
   align-items: center;

@@ -511,6 +511,8 @@ async function renderAdmin() {
   const recentRuns = stats.runs.slice(0, 20);
   const moduleStats = stats.by_module || stats.by_category || [];
   const difficultyScoreStats = stats.by_difficulty_score || [];
+  const stringRiskFields = (stats.string_field_risk?.fields || []).filter((item) => item.risk === "high" || item.risk === "medium").slice(0, 40);
+  const literalOnlyValues = stats.literal_only_candidates?.by_value || [];
 
   app.innerHTML = html`
     <div class="adminHeader">
@@ -566,6 +568,18 @@ async function renderAdmin() {
       <div class="metricCard softMetric">
         <span>样本不足题</span>
         <strong>${calibrationSampleLow}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>String 高风险字段</span>
+        <strong>${stats.overview.string_field_high_risk || 0}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>高风险题数</span>
+        <strong>${stats.overview.string_field_high_risk_tasks || 0}</strong>
+      </div>
+      <div class="metricCard softMetric">
+        <span>字面误伤候选</span>
+        <strong>${stats.overview.literal_only_candidates || 0}</strong>
       </div>
     </section>
 
@@ -705,6 +719,76 @@ async function renderAdmin() {
           }
         </div>
         <p class="hint">规则：v6 使用 difficulty_score=L×F；1-3 为基础档，4-6 标准档，8-10 进阶档，12-15 高难档。提交数少于 5 先标为样本不足；正确率低于 20% 优先检查 GT/grader。</p>
+      </article>
+
+      <article class="statPanel calibrationPanel">
+        <div class="statPanelHead">
+          <h3>字符串判分风险</h3>
+          <span>优先补 acceptable_values</span>
+        </div>
+        <div class="statTable stringRiskTable" role="table" aria-label="字符串判分风险">
+          <div class="statRow head" role="row">
+            <span>题号</span>
+            <span>模块</span>
+            <span>字段</span>
+            <span>风险</span>
+            <span>长度</span>
+            <span>GT normalized_value</span>
+          </div>
+          ${
+            stringRiskFields.length
+              ? stringRiskFields
+                  .map(
+                    (item) => html`
+                      <div class="statRow" role="row">
+                        <span>${escapeHtml(item.task_id)}</span>
+                        <span>${escapeHtml(item.module || item.category)}</span>
+                        <span>${escapeHtml(item.field)}</span>
+                        <span><b class="calibrationBadge priority-${item.risk === "high" ? 3 : 1}">${escapeHtml(item.risk)}</b></span>
+                        <span>${item.value_length}</span>
+                        <span>${escapeHtml(item.normalized_value)}</span>
+                      </div>
+                    `,
+                  )
+                  .join("")
+              : '<div class="emptyLine">暂无 string 判分风险</div>'
+          }
+        </div>
+        <p class="hint">优先处理同义重排、修饰词差异；截断 vs 完整按上下文判断；粒度错位和完全不沾边不应加入等价答案。</p>
+      </article>
+
+      <article class="statPanel calibrationPanel">
+        <div class="statPanelHead">
+          <h3>字面误伤候选</h3>
+          <span>strict fail / lenient pass</span>
+        </div>
+        <div class="statTable literalOnlyTable" role="table" aria-label="字面误伤候选">
+          <div class="statRow head" role="row">
+            <span>题号</span>
+            <span>字段</span>
+            <span>次数</span>
+            <span>GT</span>
+            <span>got</span>
+          </div>
+          ${
+            literalOnlyValues.length
+              ? literalOnlyValues
+                  .map(
+                    (item) => html`
+                      <div class="statRow" role="row">
+                        <span>${escapeHtml(item.task_id)}</span>
+                        <span>${escapeHtml(item.field)}</span>
+                        <span>${item.count}</span>
+                        <span>${escapeHtml(item.normalized_value)}</span>
+                        <span>${escapeHtml(item.got)}</span>
+                      </div>
+                    `,
+                  )
+                  .join("")
+              : '<div class="emptyLine">暂无 strict fail / lenient pass 候选</div>'
+          }
+        </div>
+        <p class="hint">这批最适合补进对应字段的 <code>acceptable_values</code>；补之前仍需人工排除粒度错位和完全不沾边的答案。</p>
       </article>
 
       <article class="statPanel">

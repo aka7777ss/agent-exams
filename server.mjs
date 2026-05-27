@@ -614,7 +614,8 @@ function matchesExpectedValue(actual, expected) {
     return [expected.normalized_value, ...acceptable].some((candidate) => deepEqual(actual, candidate));
   }
   if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "string") {
-    return deepEqual(actual, expected.normalized_value);
+    const acceptable = Array.isArray(expected.acceptable_values) ? expected.acceptable_values : [];
+    return [expected.normalized_value, ...acceptable].some((candidate) => deepEqual(actual, candidate));
   }
   if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "boolean") {
     if (typeof actual === "boolean") {
@@ -633,6 +634,59 @@ function matchesExpectedValue(actual, expected) {
     return withinTolerance(parseFiniteNumber(actual), Number(expected.normalized_value), Number(expected.tolerance ?? 0));
   }
   return deepEqual(actual, expected);
+}
+
+function normalizeLenientText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[，。、“”‘’：:；;,.!?！？（）()[\]{}《》<>／/\\|_\-\s]/g, "");
+}
+
+function lcsLength(left, right) {
+  const previous = new Array(right.length + 1).fill(0);
+  const current = new Array(right.length + 1).fill(0);
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] =
+        left[leftIndex - 1] === right[rightIndex - 1]
+          ? previous[rightIndex - 1] + 1
+          : Math.max(previous[rightIndex], current[rightIndex - 1]);
+    }
+    previous.splice(0, previous.length, ...current);
+    current.fill(0);
+  }
+
+  return previous[right.length];
+}
+
+function lenientStringMatch(actual, expected) {
+  const expectedText = normalizeLenientText(expected);
+  const actualText = normalizeLenientText(actual);
+
+  if (!expectedText || !actualText) return false;
+  if (expectedText === actualText) return true;
+  if (expectedText.length <= 4) return false;
+  if (expectedText.includes(actualText) || actualText.includes(expectedText)) return Math.min(expectedText.length, actualText.length) >= 4;
+
+  const lcs = lcsLength(expectedText, actualText);
+  const minLength = Math.min(expectedText.length, actualText.length);
+  const maxLength = Math.max(expectedText.length, actualText.length);
+  const expectedChars = new Set([...expectedText]);
+  const actualChars = new Set([...actualText]);
+  const commonChars = [...expectedChars].filter((char) => actualChars.has(char)).length;
+
+  return (lcs / minLength >= 0.72 && lcs / maxLength >= 0.48) || (expectedText.length >= 8 && commonChars / expectedChars.size >= 0.72);
+}
+
+function matchesExpectedValueLenient(actual, expected) {
+  if (matchesExpectedValue(actual, expected)) return true;
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "string") {
+    const acceptable = Array.isArray(expected.acceptable_values) ? expected.acceptable_values : [];
+    return [expected.normalized_value, ...acceptable].some((candidate) => lenientStringMatch(actual, candidate));
+  }
+  return false;
 }
 
 function gradeJsonFields(grader, answer) {
@@ -655,6 +709,149 @@ function gradeJsonFields(grader, answer) {
   }
 
   return true;
+}
+
+function gradeJsonFieldsLenient(grader, answer) {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
+    return false;
+  }
+
+  for (const [field, expected] of Object.entries(grader.required_fields || {})) {
+    if (!Object.hasOwn(answer, field) || !matchesExpectedValueLenient(answer[field], expected)) {
+      return false;
+    }
+  }
+
+  for (const [field, rule] of Object.entries(grader.semantic_fields || {})) {
+    const value = String(answer[field] ?? "").toLowerCase();
+    const groups = rule.keywords_all || [];
+    const ok = groups.every((group) => group.some((keyword) => value.includes(String(keyword).toLowerCase())));
+    if (!ok) return false;
+  }
+
+  return true;
+}
+
+function stringFieldRiskLevel(spec) {
+  if (!spec || spec.type !== "string") return "safe";
+  if (Object.hasOwn(spec, "acceptable_values")) return "low";
+  const normalizedValue = String(spec.normalized_value ?? "");
+  if (normalizedValue.length <= 4) return "low";
+  if (normalizedValue.length <= 8) return "medium";
+  return "high";
+}
+
+function buildStringFieldRiskReport(tasks) {
+  const counts = { safe: 0, low: 0, medium: 0, high: 0 };
+  const fields = [];
+  const highTaskIds = new Set();
+
+  for (const task of tasks) {
+    for (const [field, spec] of Object.entries(task.grader?.required_fields || {})) {
+      const risk = stringFieldRiskLevel(spec);
+      counts[risk] = (counts[risk] || 0) + 1;
+      if (risk === "safe") continue;
+      if (risk === "high") highTaskIds.add(task.id);
+      fields.push({
+        task_id: task.id,
+        module: task.module || "",
+        category: task.category || "",
+        type: task.type || "",
+        difficulty_score: task.difficulty_score ?? null,
+        field,
+        risk,
+        normalized_value: String(spec.normalized_value ?? ""),
+        value_length: String(spec.normalized_value ?? "").length,
+        has_acceptable_values: Object.hasOwn(spec, "acceptable_values"),
+      });
+    }
+  }
+
+  return {
+    counts,
+    string_fields: fields.length,
+    high_risk_tasks: highTaskIds.size,
+    fields: fields.sort(
+      (left, right) =>
+        ({ high: 3, medium: 2, low: 1 }[right.risk] || 0) - ({ high: 3, medium: 2, low: 1 }[left.risk] || 0) ||
+        right.value_length - left.value_length ||
+        left.task_id.localeCompare(right.task_id),
+    ),
+  };
+}
+
+function collectLenientFieldDiffs(task, answer) {
+  const diffs = [];
+  if (task.grader?.type !== "json_fields" || !answer || typeof answer !== "object" || Array.isArray(answer)) {
+    return diffs;
+  }
+
+  for (const [field, spec] of Object.entries(task.grader.required_fields || {})) {
+    if (spec?.type !== "string" || !Object.hasOwn(answer, field)) continue;
+    const actual = answer[field];
+    if (matchesExpectedValue(actual, spec)) continue;
+    if (!matchesExpectedValueLenient(actual, spec)) continue;
+    diffs.push({
+      field,
+      normalized_value: String(spec.normalized_value ?? ""),
+      got: String(actual ?? ""),
+      risk: stringFieldRiskLevel(spec),
+      value_length: String(spec.normalized_value ?? "").length,
+    });
+  }
+
+  return diffs;
+}
+
+function buildLiteralOnlyCandidates(runs, tasks) {
+  const byTaskId = new Map(tasks.map((task) => [task.id, task]));
+  const candidates = [];
+  const aggregate = new Map();
+
+  for (const run of runs) {
+    for (const answer of Object.values(run.answers || {})) {
+      const task = byTaskId.get(answer.task_id);
+      if (!task || answer.correct) continue;
+      const lenient = gradeAnswerLenient(task, answer.answer);
+      if (!lenient.correct) continue;
+      const diffs = collectLenientFieldDiffs(task, answer.answer);
+      if (!diffs.length) continue;
+
+      candidates.push({
+        run_id: run.id,
+        agent_name: run.agent_name,
+        task_id: task.id,
+        module: task.module || "",
+        category: task.category || "",
+        type: task.type || "",
+        difficulty_score: task.difficulty_score ?? null,
+        fields: diffs,
+      });
+
+      for (const diff of diffs) {
+        const key = `${task.id}::${diff.field}::${diff.got}`;
+        if (!aggregate.has(key)) {
+          aggregate.set(key, {
+            task_id: task.id,
+            module: task.module || "",
+            category: task.category || "",
+            field: diff.field,
+            normalized_value: diff.normalized_value,
+            got: diff.got,
+            risk: diff.risk,
+            count: 0,
+          });
+        }
+        aggregate.get(key).count += 1;
+      }
+    }
+  }
+
+  return {
+    total: candidates.length,
+    candidates: candidates.slice(0, 80),
+    by_value: [...aggregate.values()].sort((left, right) => right.count - left.count || left.task_id.localeCompare(right.task_id)).slice(0, 120),
+  };
 }
 
 function gradeAnswer(task, answer) {
@@ -693,6 +890,14 @@ function gradeAnswer(task, answer) {
   }
 
   return { correct: false, score: 0 };
+}
+
+function gradeAnswerLenient(task, answer) {
+  if (task.grader?.type === "json_fields") {
+    const correct = gradeJsonFieldsLenient(task.grader, answer);
+    return { correct, score: correct ? 1 : 0 };
+  }
+  return gradeAnswer(task, answer);
 }
 
 function getRunOr404(runId) {
@@ -1058,6 +1263,8 @@ function buildStats(store, tasks, scope = "real") {
     .map(summarizeBucket)
     .map((task) => ({ ...task, ...calibrationSignal(task) }))
     .sort((left, right) => left.accuracy - right.accuracy || right.attempts - left.attempts || left.task_id.localeCompare(right.task_id));
+  const stringFieldRisk = buildStringFieldRiskReport(tasks);
+  const literalOnly = buildLiteralOnlyCandidates(runs, tasks);
 
   return {
     overview: {
@@ -1077,7 +1284,13 @@ function buildStats(store, tasks, scope = "real") {
       score,
       accuracy: attempts ? score / attempts : 0,
       average_run_duration_ms: runs.length ? Math.round(totalDuration / runs.length) : null,
+      string_field_high_risk: stringFieldRisk.counts.high || 0,
+      string_field_medium_risk: stringFieldRisk.counts.medium || 0,
+      string_field_high_risk_tasks: stringFieldRisk.high_risk_tasks,
+      literal_only_candidates: literalOnly.total,
     },
+    string_field_risk: stringFieldRisk,
+    literal_only_candidates: literalOnly,
     runs: runs.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))),
     by_category: [...categoryStats.values()].map(summarizeBucket).sort((left, right) => left.category.localeCompare(right.category)),
     by_module: [...moduleStats.values()].map(summarizeBucket).sort((left, right) => left.module.localeCompare(right.module)),
