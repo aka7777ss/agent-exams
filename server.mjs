@@ -15,6 +15,7 @@ const dbFile = join(storageDir, "arena.sqlite");
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
 const configuredExamTaskCount = Number(process.env.EXAM_TASK_COUNT || 60);
 const defaultExamTaskCount = Number.isFinite(configuredExamTaskCount) && configuredExamTaskCount > 0 ? Math.floor(configuredExamTaskCount) : 60;
+const sqliteMaxBuffer = 64 * 1024 * 1024;
 const stalledLowProgressMs = 10 * 60 * 1000;
 const lowProgressSubmissionLimit = 3;
 
@@ -176,11 +177,11 @@ function sqlNumber(value) {
 }
 
 function dbExec(sql) {
-  execFileSync("sqlite3", [dbFile, sql], { encoding: "utf8" });
+  execFileSync("sqlite3", [dbFile, sql], { encoding: "utf8", maxBuffer: sqliteMaxBuffer });
 }
 
 function dbQuery(sql) {
-  const output = execFileSync("sqlite3", ["-json", dbFile, sql], { encoding: "utf8" }).trim();
+  const output = execFileSync("sqlite3", ["-json", dbFile, sql], { encoding: "utf8", maxBuffer: sqliteMaxBuffer }).trim();
   return output ? JSON.parse(output) : [];
 }
 
