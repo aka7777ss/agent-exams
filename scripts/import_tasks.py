@@ -48,7 +48,9 @@ def pick(row: dict, names: list[str]) -> str:
 
 
 def parse_options(prompt: str) -> list[dict]:
-    matches = list(re.finditer(r"(?<![A-Za-z])([A-D])(?:[.、．]|\s+)", prompt))
+    matches = list(re.finditer(r"(?<![A-Za-z])([A-D])(?:[.、．])\s*", prompt))
+    if len(matches) < 2:
+        matches = list(re.finditer(r"(?<![A-Za-z])([A-D])(?:\s+)", prompt))
     if len(matches) < 2:
         return []
 
@@ -56,16 +58,16 @@ def parse_options(prompt: str) -> list[dict]:
     for index, match in enumerate(matches):
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(prompt)
-        text = prompt[start:end].strip(" ：:；;，,")
+        text = prompt[start:end].strip().strip(" ：:；;，,").strip()
         options.append({"id": match.group(1), "text": text})
     return options
 
 
 def prompt_without_options(prompt: str) -> str:
-    first_option = re.search(r"(?<![A-Za-z])A(?:[.、．]|\s+)", prompt)
+    first_option = re.search(r"(?<![A-Za-z])A(?:[.、．])\s*", prompt) or re.search(r"(?<![A-Za-z])A(?:\s+)", prompt)
     if not first_option:
         return prompt.strip()
-    return prompt[: first_option.start()].strip(" ：:；;，,")
+    return prompt[: first_option.start()].strip().strip(" ：:；;，,").strip()
 
 
 def parse_gt(raw: str, task_type: str):
@@ -134,6 +136,9 @@ def build_task(row: dict, index: int) -> dict:
     if task_type == "number" and isinstance(answer, (int, float)):
         task["grader"]["type"] = "number_range"
         task["grader"].update({"min": answer, "max": answer})
+    elif task_type == "json" and isinstance(answer, dict):
+        task["grader"]["type"] = "json_fields"
+        task["grader"]["required_fields"] = answer
     else:
         task["grader"]["answer"] = answer
 

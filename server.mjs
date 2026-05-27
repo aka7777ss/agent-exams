@@ -352,6 +352,26 @@ function withinTolerance(actual, expected, tolerance) {
 }
 
 function matchesExpectedValue(actual, expected) {
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "exact") {
+    return deepEqual(actual, expected.value);
+  }
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "enum_set") {
+    const acceptable = Array.isArray(expected.acceptable_values) ? expected.acceptable_values : [];
+    return [expected.normalized_value, ...acceptable].some((candidate) => deepEqual(actual, candidate));
+  }
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "string") {
+    return deepEqual(actual, expected.normalized_value);
+  }
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "boolean") {
+    if (typeof actual === "boolean") {
+      return actual === expected.normalized_value;
+    }
+    const normalized = String(actual).trim().toLowerCase();
+    if (normalized === "true" || normalized === "false") {
+      return (normalized === "true") === expected.normalized_value;
+    }
+    return deepEqual(actual, expected.normalized_value);
+  }
   if (expected && typeof expected === "object" && !Array.isArray(expected) && expected.type === "percentage") {
     return withinTolerance(parsePercentage(actual), Number(expected.normalized_value), Number(expected.tolerance ?? 0));
   }

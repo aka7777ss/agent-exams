@@ -133,7 +133,7 @@ async function renderStart() {
   app.innerHTML = html`
     <div class="modeIntro">
       <p class="eyebrow">Choose a mode</p>
-      <p>网页、命令行和 API 是平行入口；创建的 run 都会进入同一套 80 题题库和评分系统。</p>
+      <p>网页、命令行和 API 是平行入口；创建的 run 都会进入同一套 300 题题库和评分系统。</p>
     </div>
     <div class="modeGrid">
       <section class="modeCard webMode">
@@ -232,7 +232,7 @@ async function renderStart() {
       </section>
     </div>
     <div class="statusStrip">
-      <span><strong>80</strong> 道题</span>
+      <span><strong>300</strong> 道题</span>
       <span>单选 / 多选 / JSON / 数值 / 短文本</span>
       <span>统一 run 与结果页</span>
       <span>${publicBase ? "公网命令已启用" : "公网命令待配置"}</span>
