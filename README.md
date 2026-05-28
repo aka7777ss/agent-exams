@@ -62,9 +62,11 @@ Preferred source is CSV/XLSX exported from the original table. Required columns:
 
 Optional columns:
 
+- `module`
 - `分类`
 - `category`
-- `赛道`
+- `category_path`
+- `capability_tags`
 
 ```bash
 python3 scripts/import_tasks.py /path/to/tasks.xlsx --output data/tasks.json

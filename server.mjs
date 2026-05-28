@@ -183,6 +183,10 @@ function taskDomain(task) {
   return module || "unknown";
 }
 
+function taskCategory(task) {
+  return task.category || task.track || "unknown";
+}
+
 const v6BucketQuota = new Map([
   ["b1", 12],
   ["b2", 12],
@@ -214,7 +218,7 @@ function sampleV6ExamTasks(tasks, seed) {
   function canPick(task, { enforceDomain, enforceCategory }) {
     if (selectedIds.has(task.id)) return false;
     if (enforceDomain && (domainCounts.get(taskDomain(task)) || 0) >= (v6DomainQuota.get(taskDomain(task)) || 0)) return false;
-    if (enforceCategory && (categoryCounts.get(task.category) || 0) >= 2) return false;
+    if (enforceCategory && (categoryCounts.get(taskCategory(task)) || 0) >= 2) return false;
     return true;
   }
 
@@ -222,7 +226,7 @@ function sampleV6ExamTasks(tasks, seed) {
     selected.push(task);
     selectedIds.add(task.id);
     domainCounts.set(taskDomain(task), (domainCounts.get(taskDomain(task)) || 0) + 1);
-    categoryCounts.set(task.category, (categoryCounts.get(task.category) || 0) + 1);
+    categoryCounts.set(taskCategory(task), (categoryCounts.get(taskCategory(task)) || 0) + 1);
   }
 
   for (const bucket of pools) {
@@ -755,7 +759,8 @@ function buildStringFieldRiskReport(tasks) {
       fields.push({
         task_id: task.id,
         module: task.module || "",
-        category: task.category || "",
+        category: taskCategory(task),
+        category_path: task.category_path || "",
         type: task.type || "",
         difficulty_score: task.difficulty_score ?? null,
         field,
@@ -822,7 +827,8 @@ function buildLiteralOnlyCandidates(runs, tasks) {
         agent_name: run.agent_name,
         task_id: task.id,
         module: task.module || "",
-        category: task.category || "",
+        category: taskCategory(task),
+        category_path: task.category_path || "",
         type: task.type || "",
         difficulty_score: task.difficulty_score ?? null,
         fields: diffs,
@@ -834,7 +840,8 @@ function buildLiteralOnlyCandidates(runs, tasks) {
           aggregate.set(key, {
             task_id: task.id,
             module: task.module || "",
-            category: task.category || "",
+            category: taskCategory(task),
+            category_path: task.category_path || "",
             field: diff.field,
             normalized_value: diff.normalized_value,
             got: diff.got,
@@ -936,7 +943,8 @@ function buildResult(run, tasks) {
       return {
         index: index + 1,
         task_id: task.id,
-        category: task.category,
+        category: taskCategory(task),
+        category_path: task.category_path || "",
         type: task.type,
         submitted: Boolean(answer),
         correct: answer?.correct ?? false,
@@ -1190,9 +1198,9 @@ function buildStats(store, tasks, scope = "real") {
       task.id,
       {
         task_id: task.id,
-        category: task.category,
+        category: taskCategory(task),
+        category_path: task.category_path || "",
         module: task.module || "",
-        track: task.track || "",
         type: task.type,
         difficulty: task.difficulty || "unknown",
         difficulty_score: task.difficulty_score ?? null,
@@ -1224,7 +1232,7 @@ function buildStats(store, tasks, scope = "real") {
 
       const buckets = [
         taskStats.get(task.id),
-        categoryStats.get(task.category) || { category: task.category, ...emptyBucket() },
+        categoryStats.get(taskCategory(task)) || { category: taskCategory(task), ...emptyBucket() },
         moduleStats.get(task.module) || { module: task.module || "unknown", ...emptyBucket() },
         typeStats.get(task.type) || { type: task.type, ...emptyBucket() },
         difficultyStats.get(task.difficulty) || { difficulty: task.difficulty || "unknown", ...emptyBucket() },
@@ -1248,7 +1256,7 @@ function buildStats(store, tasks, scope = "real") {
         }
       }
 
-      categoryStats.set(task.category, buckets[1]);
+      categoryStats.set(taskCategory(task), buckets[1]);
       moduleStats.set(task.module, buckets[2]);
       typeStats.set(task.type, buckets[3]);
       difficultyStats.set(task.difficulty, buckets[4]);

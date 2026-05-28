@@ -108,7 +108,10 @@ def build_task(row: dict, index: int) -> dict:
     raw_type = pick(row, ["题型", "type"])
     prompt = pick(row, ["题目", "prompt", "question"])
     gt = pick(row, ["GT", "answer", "答案"])
-    category = pick(row, ["分类", "category", "赛道"]) or raw_id[:1] or "general"
+    module = pick(row, ["module", "模块"]) or "general"
+    category = pick(row, ["category", "分类", "赛道"]) or raw_id[:1] or "general"
+    category_path = pick(row, ["category_path", "分类路径"]) or f"{module}/{category}"
+    capability_tags = [item.strip() for item in (pick(row, ["capability_tags", "capability", "能力标签"]) or "").replace("，", ",").split(",") if item.strip()]
 
     task_type = TYPE_MAP.get(raw_type, TYPE_MAP.get(raw_type.strip(), raw_type.strip()))
     if task_type not in {"single_choice", "multiple_choice", "json", "number", "short_text"}:
@@ -124,12 +127,16 @@ def build_task(row: dict, index: int) -> dict:
 
     task = {
         "id": raw_id,
+        "module": module,
         "category": category,
+        "category_path": category_path,
         "type": task_type,
         "prompt": public_prompt,
         "answer_schema": build_schema(task_type, options),
         "grader": {"type": "exact_match"},
     }
+    if capability_tags:
+        task["capability_tags"] = capability_tags
 
     if options:
         task["options"] = options
